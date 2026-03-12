@@ -13,9 +13,11 @@ func (b *Bridge) observeSession(sessionID string) {
 	subID := "bridge-observe-" + sessionID
 	ch := sessions.Global().SubscribeObserve(sessionID, subID)
 	if ch == nil {
+		log.Warnf("[bridge] failed to subscribe observe for session %s", sessionID)
 		return
 	}
 	defer sessions.Global().UnsubscribeObserve(sessionID, subID)
+	log.Infof("[bridge] observeSession started for %s", sessionID)
 
 	for {
 		select {

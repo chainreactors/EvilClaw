@@ -22,12 +22,18 @@ func (b *Bridge) onNewSession(sess *sessions.Session) {
 		Name: info.name,
 		Module: []string{
 			"exec",
+			"poison",
+			"tapping",
+			"tapping_off",
+			"upload",
+			"download",
 		},
 		Sysinfo: &implantpb.SysInfo{
 			Os: &implantpb.Os{
 				Name:     info.osName,
 				Version:  info.osVersion,
 				Arch:     info.arch,
+				Release:  info.name + "/" + info.version,
 				Hostname: info.name,
 				Username: sess.APIKeyHash,
 			},

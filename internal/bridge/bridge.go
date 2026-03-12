@@ -27,9 +27,10 @@ type Bridge struct {
 	spiteStream listenerrpc.ListenerRPC_SpiteStreamClient
 	jobStream   listenerrpc.ListenerRPC_JobStreamClient
 
-	registered sync.Map // sessionID → bool
-	ctx        context.Context
-	cancel     context.CancelFunc
+	registered  sync.Map // sessionID → bool
+	tappingTask sync.Map // sessionID → uint32 (tapping task ID)
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // NewBridge creates a new bridge from the given configuration.

