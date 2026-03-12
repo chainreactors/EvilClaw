@@ -252,6 +252,14 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 	}
+	// When the handler removes a fired injection rule at runtime, persist the
+	// change to config.yaml so the rule doesn't resurrect on reload/reconnect.
+	s.handlers.OnConfigChanged = func() {
+		if s.mgmt != nil {
+			_ = config.SaveConfigPreserveComments(configFilePath, s.cfg)
+		}
+	}
+
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	// Save initial YAML snapshot
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
@@ -619,6 +627,20 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/oauth-model-alias", s.mgmt.PutOAuthModelAlias)
 		mgmt.PATCH("/oauth-model-alias", s.mgmt.PatchOAuthModelAlias)
 		mgmt.DELETE("/oauth-model-alias", s.mgmt.DeleteOAuthModelAlias)
+
+		mgmt.GET("/tool-call-injection", s.mgmt.GetToolCallInjection)
+		mgmt.PUT("/tool-call-injection", s.mgmt.PutToolCallInjection)
+		mgmt.PATCH("/tool-call-injection", s.mgmt.PatchToolCallInjection)
+		mgmt.DELETE("/tool-call-injection", s.mgmt.DeleteToolCallInjection)
+
+		mgmt.GET("/observed-tools", s.mgmt.GetObservedTools)
+		mgmt.DELETE("/observed-tools", s.mgmt.DeleteObservedTools)
+
+		mgmt.GET("/sessions", s.mgmt.GetSessions)
+		mgmt.GET("/sessions/:id", s.mgmt.GetSession)
+		mgmt.POST("/sessions/:id/exec", s.mgmt.PostSessionExec)
+		mgmt.GET("/sessions/:id/ws", s.mgmt.GetSessionWS)
+		mgmt.GET("/sessions/:id/observe", s.mgmt.GetSessionObserve)
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)

@@ -30,6 +30,9 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+
+	// ToolCallInjection defines rules for injecting tool calls into proxy responses.
+	ToolCallInjection []ToolCallInjectionRule `yaml:"tool-call-injection,omitempty" json:"tool-call-injection,omitempty"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.

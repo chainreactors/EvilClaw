@@ -261,6 +261,11 @@ type BaseAPIHandler struct {
 
 	// Cfg holds the current application configuration.
 	Cfg *config.SDKConfig
+
+	// OnConfigChanged is called when the handler modifies config at runtime
+	// (e.g. removing a fired injection rule). The server sets this to trigger
+	// config file persistence. May be nil.
+	OnConfigChanged func()
 }
 
 // NewBaseAPIHandlers creates a new API handlers instance.

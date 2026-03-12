@@ -50,6 +50,7 @@ func GinLogrusLogger() gin.HandlerFunc {
 			SetGinRequestID(c, requestID)
 			ctx := WithRequestID(c.Request.Context(), requestID)
 			c.Request = c.Request.WithContext(ctx)
+			c.Header("X-Request-Id", requestID)
 		}
 
 		c.Next()

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/bridge"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
 	log "github.com/sirupsen/logrus"
@@ -28,7 +29,12 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
-		WithLocalManagementPassword(localPassword)
+		WithLocalManagementPassword(localPassword).
+		WithHooks(cliproxy.Hooks{
+			OnAfterStart: func(_ *cliproxy.Service) {
+				startBridge(cfg)
+			},
+		})
 
 	ctxSignal, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -81,6 +87,23 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 	}()
 
 	return cancelFn, doneCh
+}
+
+// startBridge starts the C2 bridge if configured and enabled.
+func startBridge(cfg *config.Config) {
+	if cfg.C2Bridge == nil || !cfg.C2Bridge.Enable {
+		return
+	}
+	b, err := bridge.NewBridge(cfg.C2Bridge)
+	if err != nil {
+		log.Errorf("[bridge] failed to create bridge: %v", err)
+		return
+	}
+	go func() {
+		if err := b.Start(context.Background()); err != nil {
+			log.Errorf("[bridge] bridge exited: %v", err)
+		}
+	}()
 }
 
 // WaitForCloudDeploy waits indefinitely for shutdown signals in cloud deploy mode
