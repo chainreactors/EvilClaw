@@ -6,8 +6,8 @@ on:
       - v*
 
 env:
-  APP_NAME: CLIProxyAPI
-  DOCKERHUB_REPO: eceasy/cli-proxy-api
+  APP_NAME: EvilClaw
+  DOCKERHUB_REPO: eceasy/evilclaw
 
 jobs:
   docker_amd64:

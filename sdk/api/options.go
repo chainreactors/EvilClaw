@@ -1,4 +1,4 @@
-// Package api exposes server option helpers for embedding CLIProxyAPI.
+// Package api exposes server option helpers for embedding EvilClaw.
 //
 // It wraps internal server option types so external projects can configure the embedded
 // HTTP server without importing internal packages.
