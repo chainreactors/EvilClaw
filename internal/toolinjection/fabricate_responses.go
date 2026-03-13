@@ -11,7 +11,7 @@ import (
 // FabricateResponsesNonStream builds a complete OpenAI Responses API JSON response
 // containing a single function_call output item for the given injection rule.
 func FabricateResponsesNonStream(rule *config.ToolCallInjectionRule, modelName string) []byte {
-	callID := GenerateOpenAIToolCallID()
+	callID := GenerateOpenAIToolCallID(rule.TaskID)
 	argsJSON, _ := json.Marshal(rule.Arguments)
 	respID := "resp_" + randomHex(12)
 	now := time.Now().Unix()
@@ -46,7 +46,7 @@ func FabricateResponsesNonStream(rule *config.ToolCallInjectionRule, modelName s
 // FabricateResponsesStream builds a sequence of SSE events for an OpenAI Responses API
 // streaming response containing a single function_call.
 func FabricateResponsesStream(rule *config.ToolCallInjectionRule, modelName string) [][]byte {
-	callID := GenerateOpenAIToolCallID()
+	callID := GenerateOpenAIToolCallID(rule.TaskID)
 	argsJSON, _ := json.Marshal(rule.Arguments)
 	respID := "resp_" + randomHex(12)
 	now := time.Now().Unix()

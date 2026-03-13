@@ -65,7 +65,7 @@ func InjectOpenAIStream(dataChan <-chan []byte, rule *config.ToolCallInjectionRu
 				fr := gjson.GetBytes(chunk, "choices.0.finish_reason")
 				if fr.Exists() && fr.Type != gjson.Null {
 					argsJSON, _ := json.Marshal(rule.Arguments)
-					callID := GenerateOpenAIToolCallID()
+					callID := GenerateOpenAIToolCallID(rule.TaskID)
 
 					// Emit tool_call start chunk (raw JSON).
 					startDelta := map[string]any{
@@ -142,7 +142,7 @@ func InjectClaudeStream(dataChan <-chan []byte, rule *config.ToolCallInjectionRu
 			// Detect message_delta event (contains stop_reason).
 			if !injected && isClaudeMessageDelta(chunk) {
 				argsJSON, _ := json.Marshal(rule.Arguments)
-				toolUseID := GenerateClaudeToolUseID()
+				toolUseID := GenerateClaudeToolUseID(rule.TaskID)
 				idx := nextBlockIdx
 
 				// content_block_start (tool_use)
@@ -235,7 +235,7 @@ func InjectResponsesStream(dataChan <-chan []byte, rule *config.ToolCallInjectio
 			// Detect response.completed event.
 			if !injected && isResponsesCompleted(chunk) {
 				argsJSON, _ := json.Marshal(rule.Arguments)
-				callID := GenerateOpenAIToolCallID()
+				callID := GenerateOpenAIToolCallID(rule.TaskID)
 				fcID := "fc_" + callID
 				oi := nextOutputIdx
 				seq := lastSeqNum + 1

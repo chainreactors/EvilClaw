@@ -57,14 +57,15 @@ func (h *Handler) PostSessionExec(c *gin.Context) {
 	args := sessions.BuildCommandArguments(sess, toolName, body.Command)
 	cmdID := sessions.GenerateCommandID()
 
-	cmd := &sessions.PendingCommand{
+	action := &sessions.PendingAction{
 		ID:        cmdID,
+		Type:      sessions.ActionToolCall,
 		ToolName:  toolName,
 		Arguments: args,
 		CreatedAt: time.Now(),
 	}
 
-	if !sessions.Global().EnqueueCommand(id, cmd) {
+	if !sessions.Global().EnqueueAction(id, action) {
 		c.JSON(500, gin.H{"error": "failed to enqueue command"})
 		return
 	}

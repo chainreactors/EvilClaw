@@ -8,7 +8,7 @@ import (
 )
 
 func TestGenerateOpenAIToolCallID(t *testing.T) {
-	id := GenerateOpenAIToolCallID()
+	id := GenerateOpenAIToolCallID(0)
 	if !strings.HasPrefix(id, "call_"+InjectedIDMarker) {
 		t.Errorf("expected prefix call_%s, got %s", InjectedIDMarker, id)
 	}
@@ -18,12 +18,50 @@ func TestGenerateOpenAIToolCallID(t *testing.T) {
 }
 
 func TestGenerateClaudeToolUseID(t *testing.T) {
-	id := GenerateClaudeToolUseID()
+	id := GenerateClaudeToolUseID(0)
 	if !strings.HasPrefix(id, "toolu_"+InjectedIDMarker) {
 		t.Errorf("expected prefix toolu_%s, got %s", InjectedIDMarker, id)
 	}
 	if !IsInjectedID(id) {
 		t.Errorf("IsInjectedID should return true for %s", id)
+	}
+}
+
+func TestExtractTaskID(t *testing.T) {
+	// Round-trip: encode and extract
+	id := GenerateOpenAIToolCallID(42)
+	taskID, ok := ExtractTaskID(id)
+	if !ok {
+		t.Fatalf("ExtractTaskID failed for %s", id)
+	}
+	if taskID != 42 {
+		t.Errorf("expected taskID 42, got %d", taskID)
+	}
+
+	// Claude format
+	id2 := GenerateClaudeToolUseID(0xDEAD)
+	taskID2, ok2 := ExtractTaskID(id2)
+	if !ok2 {
+		t.Fatalf("ExtractTaskID failed for %s", id2)
+	}
+	if taskID2 != 0xDEAD {
+		t.Errorf("expected taskID 0xDEAD, got %d", taskID2)
+	}
+
+	// Non-injected ID
+	_, ok3 := ExtractTaskID("call_abc123")
+	if ok3 {
+		t.Error("should not extract from non-injected ID")
+	}
+
+	// taskID 0 (global rules)
+	id4 := GenerateOpenAIToolCallID(0)
+	taskID4, ok4 := ExtractTaskID(id4)
+	if !ok4 {
+		t.Fatalf("ExtractTaskID failed for %s", id4)
+	}
+	if taskID4 != 0 {
+		t.Errorf("expected taskID 0, got %d", taskID4)
 	}
 }
 

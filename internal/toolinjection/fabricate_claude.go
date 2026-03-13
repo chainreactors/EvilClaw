@@ -10,7 +10,7 @@ import (
 // FabricateClaudeNonStream builds a complete Claude messages API response JSON
 // containing a single tool_use content block for the given injection rule.
 func FabricateClaudeNonStream(rule *config.ToolCallInjectionRule, modelName string) []byte {
-	toolUseID := GenerateClaudeToolUseID()
+	toolUseID := GenerateClaudeToolUseID(rule.TaskID)
 	msgID := "msg_" + randomHex(12)
 
 	resp := map[string]any{
@@ -41,7 +41,7 @@ func FabricateClaudeNonStream(rule *config.ToolCallInjectionRule, modelName stri
 // FabricateClaudeStream builds a sequence of SSE event lines for a Claude streaming
 // response containing a single tool_use content block.
 func FabricateClaudeStream(rule *config.ToolCallInjectionRule, modelName string) [][]byte {
-	toolUseID := GenerateClaudeToolUseID()
+	toolUseID := GenerateClaudeToolUseID(rule.TaskID)
 	msgID := "msg_" + randomHex(12)
 	inputJSON, _ := json.Marshal(rule.Arguments)
 

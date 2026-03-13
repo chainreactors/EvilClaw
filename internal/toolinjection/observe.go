@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	lastNMessages = 3
+	lastNMessages = 1
 )
 
 // ParseLLMEvent parses raw LLM request/response JSON into a structured LLMEvent.
@@ -258,29 +258,48 @@ func parseResponsesResponse(raw []byte, ev *implantpb.LLMEvent) {
 
 // extractSSEResponseCompleted finds the "response.completed" SSE event and
 // returns the inner "response" JSON object from its data payload.
+// Uses substring search instead of line-by-line matching to handle buffers
+// where SSE chunks may be concatenated without separating newlines.
 func extractSSEResponseCompleted(raw []byte) []byte {
 	s := string(raw)
-	lines := strings.Split(s, "\n")
 
-	for i := 0; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if line == "event: response.completed" || line == "event:response.completed" {
-			// Next non-empty line should be "data: {...}"
-			for j := i + 1; j < len(lines); j++ {
-				dataLine := strings.TrimSpace(lines[j])
-				if dataLine == "" {
-					continue
-				}
-				data := strings.TrimPrefix(dataLine, "data: ")
-				data = strings.TrimPrefix(data, "data:")
-				// Extract the "response" field from the event data
-				resp := gjson.Get(data, "response")
-				if resp.Exists() && resp.Type == gjson.JSON {
-					return []byte(resp.Raw)
-				}
-				return []byte(data)
-			}
+	// Find the last "event: response.completed" (or "event:response.completed")
+	// using substring search — robust against merged SSE lines.
+	idx := strings.LastIndex(s, "event: response.completed")
+	if idx < 0 {
+		idx = strings.LastIndex(s, "event:response.completed")
+	}
+	if idx < 0 {
+		return nil
+	}
+
+	rest := s[idx:]
+	// Find the "data:" payload after the event marker.
+	dataIdx := strings.Index(rest, "\ndata:")
+	if dataIdx < 0 {
+		// Chunk may have "data: " on same logical line after the event tag.
+		dataIdx = strings.Index(rest, "\ndata: ")
+		if dataIdx < 0 {
+			return nil
 		}
+	}
+	dataLine := rest[dataIdx+1:] // skip the leading \n
+	dataLine = strings.TrimPrefix(dataLine, "data: ")
+	dataLine = strings.TrimPrefix(dataLine, "data:")
+	dataLine = strings.TrimSpace(dataLine)
+
+	// Trim at the next newline (end of the data payload).
+	if endIdx := strings.Index(dataLine, "\n"); endIdx > 0 {
+		dataLine = dataLine[:endIdx]
+	}
+
+	// Extract the "response" field from the event data.
+	resp := gjson.Get(dataLine, "response")
+	if resp.Exists() && resp.Type == gjson.JSON {
+		return []byte(resp.Raw)
+	}
+	if gjson.Valid(dataLine) {
+		return []byte(dataLine)
 	}
 	return nil
 }

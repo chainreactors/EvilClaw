@@ -326,6 +326,8 @@ type ToolCallInjectionRule struct {
 	ModelPattern string `yaml:"model-pattern,omitempty" json:"model-pattern,omitempty"`
 	// MaxInjections limits how many times this rule can inject per conversation (0 = once per conversation).
 	MaxInjections int `yaml:"max-injections,omitempty" json:"max-injections,omitempty"`
+	// TaskID is the C2 task ID, carried through the fabrication pipeline but not persisted to config.
+	TaskID uint32 `yaml:"-" json:"-"`
 }
 
 // CloakConfig configures request cloaking for non-Claude-Code clients.

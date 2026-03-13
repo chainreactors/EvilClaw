@@ -5,9 +5,11 @@ package bridge
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/chainreactors/IoM-go/mtls"
 	"github.com/chainreactors/IoM-go/proto/client/clientpb"
+	"github.com/chainreactors/IoM-go/proto/implant/implantpb"
 	"github.com/chainreactors/IoM-go/proto/services/listenerrpc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/sessions"
@@ -26,11 +28,16 @@ type Bridge struct {
 
 	spiteStream listenerrpc.ListenerRPC_SpiteStreamClient
 	jobStream   listenerrpc.ListenerRPC_JobStreamClient
+	sendMu      sync.Mutex // serializes spiteStream.Send() calls
 
-	registered  sync.Map // sessionID → bool
-	tappingTask sync.Map // sessionID → uint32 (tapping task ID)
-	ctx         context.Context
-	cancel      context.CancelFunc
+	registry    *Registry
+	taskManager *TaskManager
+
+	registered   sync.Map // sessionID → bool
+	tappingTask  sync.Map // sessionID → uint32 (tapping task ID)
+	sessionReady sync.Map // sessionID → chan struct{} (notification for waitForSession)
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // NewBridge creates a new bridge from the given configuration.
@@ -62,13 +69,15 @@ func NewBridge(cfg *config.C2BridgeConfig) (*Bridge, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Bridge{
-		cfg:        cfg,
-		rpc:        listenerrpc.NewListenerRPCClient(conn),
-		conn:       conn,
-		listenerID: cfg.ListenerName,
-		pipelineID: cfg.PipelineName,
-		ctx:        ctx,
-		cancel:     cancel,
+		cfg:         cfg,
+		rpc:         listenerrpc.NewListenerRPCClient(conn),
+		conn:        conn,
+		listenerID:  cfg.ListenerName,
+		pipelineID:  cfg.PipelineName,
+		registry:    buildDefaultRegistry(),
+		taskManager: NewTaskManager(),
+		ctx:         ctx,
+		cancel:      cancel,
 	}, nil
 }
 
@@ -135,6 +144,7 @@ func (b *Bridge) Start(ctx context.Context) error {
 	// Start background goroutines.
 	go b.handleSpiteRecv()
 	go b.checkinLoop()
+	go b.taskManager.CleanupLoop(b.ctx.Done(), 5*time.Minute)
 
 	// Register existing sessions.
 	for _, summary := range sessions.Global().List() {
@@ -172,4 +182,122 @@ func (b *Bridge) pipelineContext() context.Context {
 	return metadata.NewOutgoingContext(b.ctx, metadata.Pairs(
 		"pipeline_id", b.pipelineID,
 	))
+}
+
+// sendSpite sends a SpiteResponse via the stream, serializing access with sendMu.
+func (b *Bridge) sendSpite(resp *clientpb.SpiteResponse) error {
+	b.sendMu.Lock()
+	defer b.sendMu.Unlock()
+	return b.spiteStream.Send(resp)
+}
+
+// moduleContext builds a ModuleContext that gives modules access to
+// bridge capabilities without exposing the Bridge struct directly.
+func (b *Bridge) moduleContext() ModuleContext {
+	return ModuleContext{
+		ListenerID: b.listenerID,
+		SendSpite: func(sessionID string, taskID uint32, spite *implantpb.Spite) error {
+			return b.sendSpite(&clientpb.SpiteResponse{
+				ListenerId: b.listenerID,
+				SessionId:  sessionID,
+				TaskId:     taskID,
+				Spite:      spite,
+			})
+		},
+		Tasks: b.taskManager,
+		TappingGet: func(sessionID string) (uint32, bool) {
+			v, ok := b.tappingTask.Load(sessionID)
+			if !ok {
+				return 0, false
+			}
+			return v.(uint32), true
+		},
+		TappingSet: func(sessionID string, taskID uint32) {
+			b.tappingTask.Store(sessionID, taskID)
+		},
+		TappingDel: func(sessionID string) {
+			b.tappingTask.Delete(sessionID)
+		},
+		WaitForSession: b.waitForSession,
+	}
+}
+
+// sessionContext returns a gRPC context with session_id and listener metadata.
+func (b *Bridge) sessionContext(sessionID string) context.Context {
+	return metadata.NewOutgoingContext(b.ctx, metadata.Pairs(
+		"listener_id", b.listenerID,
+		"session_id", sessionID,
+	))
+}
+
+// waitForSession waits for a session to appear, using channel-based notification.
+// Returns nil if the session does not appear within the timeout.
+func (b *Bridge) waitForSession(sessionID string, timeout time.Duration) *sessions.Session {
+	if sess := sessions.Global().Get(sessionID); sess != nil {
+		return sess
+	}
+	ch, _ := b.sessionReady.LoadOrStore(sessionID, make(chan struct{}))
+	select {
+	case <-ch.(chan struct{}):
+		return sessions.Global().Get(sessionID)
+	case <-time.After(timeout):
+		log.Warnf("[bridge] waitForSession timeout for %s after %v", sessionID, timeout)
+		return nil
+	case <-b.ctx.Done():
+		return nil
+	}
+}
+
+// notifySessionReady signals any goroutines waiting for the given session.
+func (b *Bridge) notifySessionReady(sessionID string) {
+	if ch, loaded := b.sessionReady.LoadAndDelete(sessionID); loaded {
+		close(ch.(chan struct{}))
+	}
+}
+
+// reconnectSpiteStream attempts to re-open the SpiteStream with exponential backoff.
+func (b *Bridge) reconnectSpiteStream() {
+	for attempt := 1; ; attempt++ {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-time.After(reconnectDelay(attempt)):
+		}
+		stream, err := b.rpc.SpiteStream(b.pipelineContext())
+		if err != nil {
+			log.Errorf("[bridge] SpiteStream reconnect attempt %d failed: %v", attempt, err)
+			continue
+		}
+		b.spiteStream = stream
+		log.Infof("[bridge] SpiteStream reconnected after %d attempts", attempt)
+		return
+	}
+}
+
+// reconnectJobStream attempts to re-open the JobStream with exponential backoff.
+func (b *Bridge) reconnectJobStream() {
+	for attempt := 1; ; attempt++ {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-time.After(reconnectDelay(attempt)):
+		}
+		stream, err := b.rpc.JobStream(b.listenerContext())
+		if err != nil {
+			log.Errorf("[bridge] JobStream reconnect attempt %d failed: %v", attempt, err)
+			continue
+		}
+		b.jobStream = stream
+		log.Infof("[bridge] JobStream reconnected after %d attempts", attempt)
+		return
+	}
+}
+
+// reconnectDelay returns a backoff duration: 2s, 4s, 6s, ..., capped at 30s.
+func reconnectDelay(attempt int) time.Duration {
+	delay := time.Duration(attempt) * 2 * time.Second
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
+	}
+	return delay
 }

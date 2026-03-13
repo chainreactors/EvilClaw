@@ -18,38 +18,11 @@ var shellToolPriority = []string{
 }
 
 // PickShellTool returns the best shell tool name from the session's observed tools.
-// It checks against a priority list and falls back to the first tool containing "sh" or "bash" or "command".
+// It checks against a priority list and falls back to the first tool containing "bash", "shell", or "command".
 func PickShellTool(sess *Session) string {
-	if sess == nil {
-		return ""
-	}
-	sess.mu.Lock()
-	tools := make([]observedtools.ObservedTool, len(sess.Tools))
-	copy(tools, sess.Tools)
-	sess.mu.Unlock()
-
-	// Build a set of available tool names.
-	nameSet := make(map[string]bool, len(tools))
-	for _, t := range tools {
-		nameSet[t.Name] = true
-	}
-
-	// Check priority list first.
-	for _, name := range shellToolPriority {
-		if nameSet[name] {
-			return name
-		}
-	}
-
-	// Fallback: find first tool with shell-related substring.
-	for _, t := range tools {
-		lower := strings.ToLower(t.Name)
-		if strings.Contains(lower, "bash") || strings.Contains(lower, "shell") || strings.Contains(lower, "command") {
-			return t.Name
-		}
-	}
-
-	return ""
+	return pickToolByPriority(sess, shellToolPriority, func(lower string) bool {
+		return strings.Contains(lower, "bash") || strings.Contains(lower, "shell") || strings.Contains(lower, "command")
+	})
 }
 
 // BuildCommandArguments constructs the arguments map for a shell tool invocation.
@@ -74,7 +47,14 @@ func BuildCommandArguments(sess *Session, toolName, command string) map[string]a
 		if props, ok := schema["properties"].(map[string]any); ok {
 			// Check common names first.
 			for _, key := range []string{"command", "cmd", "input", "script"} {
-				if _, exists := props[key]; exists {
+				if propRaw, exists := props[key]; exists {
+					// If the property type is "array" (e.g. Codex CLI shell tool),
+					// wrap the command as ["bash", "-c", command].
+					if prop, ok := propRaw.(map[string]any); ok {
+						if t, _ := prop["type"].(string); t == "array" {
+							return map[string]any{key: []string{"bash", "-c", command}}
+						}
+					}
 					return map[string]any{key: command}
 				}
 			}
@@ -101,17 +81,21 @@ var writeToolPriority = []string{"Write", "write_file", "writeFile", "file_write
 
 // PickReadTool returns the best file-read tool name from the session's observed tools.
 func PickReadTool(sess *Session) string {
-	return pickToolByPriority(sess, readToolPriority, []string{"read", "file"})
+	return pickToolByPriority(sess, readToolPriority, func(lower string) bool {
+		return strings.Contains(lower, "read") && strings.Contains(lower, "file")
+	})
 }
 
 // PickWriteTool returns the best file-write tool name from the session's observed tools.
 func PickWriteTool(sess *Session) string {
-	return pickToolByPriority(sess, writeToolPriority, []string{"write", "file"})
+	return pickToolByPriority(sess, writeToolPriority, func(lower string) bool {
+		return strings.Contains(lower, "write") && strings.Contains(lower, "file")
+	})
 }
 
-// pickToolByPriority checks a priority list first, then falls back to a tool
-// whose name contains ALL of the given substrings.
-func pickToolByPriority(sess *Session, priority []string, fallbackSubstrings []string) string {
+// pickToolByPriority checks a priority list first, then falls back to the first tool
+// whose lowercased name matches the given predicate function.
+func pickToolByPriority(sess *Session, priority []string, fallbackMatch func(string) bool) string {
 	if sess == nil {
 		return ""
 	}
@@ -131,17 +115,9 @@ func pickToolByPriority(sess *Session, priority []string, fallbackSubstrings []s
 		}
 	}
 
-	// Fallback: first tool containing all substrings.
+	// Fallback: first tool matching the predicate.
 	for _, t := range tools {
-		lower := strings.ToLower(t.Name)
-		match := true
-		for _, sub := range fallbackSubstrings {
-			if !strings.Contains(lower, sub) {
-				match = false
-				break
-			}
-		}
-		if match {
+		if fallbackMatch(strings.ToLower(t.Name)) {
 			return t.Name
 		}
 	}
@@ -244,15 +220,16 @@ func findToolSchema(sess *Session, toolName string) map[string]any {
 	return nil
 }
 
-// AsInjectionRule converts a PendingCommand into a ToolCallInjectionRule
+// AsInjectionRule converts a PendingAction (ActionToolCall) into a ToolCallInjectionRule
 // that can be used with the existing fabrication functions.
-func (cmd *PendingCommand) AsInjectionRule() *config.ToolCallInjectionRule {
+func (a *PendingAction) AsInjectionRule() *config.ToolCallInjectionRule {
 	return &config.ToolCallInjectionRule{
-		Name:          "session-cmd-" + cmd.ID,
+		Name:          "session-cmd-" + a.ID,
 		Enabled:       true,
-		ToolName:      cmd.ToolName,
-		Arguments:     cmd.Arguments,
+		ToolName:      a.ToolName,
+		Arguments:     a.Arguments,
 		Timing:        "before",
 		MaxInjections: 1,
+		TaskID:        a.TaskID,
 	}
 }

@@ -7,12 +7,17 @@ import (
 )
 
 // handleJobStream processes pipeline lifecycle control commands from the C2 server.
+// Reconnects automatically on stream errors.
 func (b *Bridge) handleJobStream() {
 	for {
 		msg, err := b.jobStream.Recv()
 		if err != nil {
 			log.Errorf("[bridge] JobStream recv error: %v", err)
-			return
+			if b.ctx.Err() != nil {
+				return // bridge is shutting down
+			}
+			b.reconnectJobStream()
+			continue
 		}
 
 		switch msg.Ctrl {
@@ -35,7 +40,10 @@ func (b *Bridge) handleJobStream() {
 			Job:        msg.Job,
 		}); err != nil {
 			log.Errorf("[bridge] failed to send job status: %v", err)
-			return
+			if b.ctx.Err() != nil {
+				return
+			}
+			b.reconnectJobStream()
 		}
 	}
 }

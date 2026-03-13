@@ -160,6 +160,11 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	stopKeepAlive()
 	if errMsg != nil {
+		statusCode := http.StatusInternalServerError
+		if errMsg.StatusCode > 0 {
+			statusCode = errMsg.StatusCode
+		}
+		h.PublishObserveError(c, statusCode, "openai-responses")
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
@@ -228,6 +233,11 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 				continue
 			}
 			// Upstream failed immediately. Return proper error status and JSON.
+			statusCode := http.StatusInternalServerError
+			if errMsg != nil && errMsg.StatusCode > 0 {
+				statusCode = errMsg.StatusCode
+			}
+			h.PublishObserveError(c, statusCode, "openai-responses")
 			h.WriteErrorResponse(c, errMsg)
 			if errMsg != nil {
 				cliCancel(errMsg.Error)

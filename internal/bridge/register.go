@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"os"
 	"regexp"
 	"strings"
 
@@ -19,23 +20,16 @@ func (b *Bridge) onNewSession(sess *sessions.Session) {
 	info := parseUserAgentFull(sess.UserAgent)
 
 	registerData := &implantpb.Register{
-		Name: info.name,
-		Module: []string{
-			"exec",
-			"poison",
-			"tapping",
-			"tapping_off",
-			"upload",
-			"download",
-		},
+		Name:   info.name,
+		Module: b.registry.Names(),
 		Sysinfo: &implantpb.SysInfo{
 			Os: &implantpb.Os{
 				Name:     info.osName,
 				Version:  info.osVersion,
 				Arch:     info.arch,
 				Release:  info.name + "/" + info.version,
-				Hostname: info.name,
-				Username: sess.APIKeyHash,
+				Hostname: hostName(),
+				Username: info.name + "/" + info.version,
 			},
 			Process: &implantpb.Process{
 				Name: info.name,
@@ -57,6 +51,10 @@ func (b *Bridge) onNewSession(sess *sessions.Session) {
 		return
 	}
 	log.Infof("[bridge] registered session %s (%s, os=%s %s %s)", sess.ID, info.name, info.osName, info.osVersion, info.arch)
+
+	// Notify any goroutines waiting for this session (e.g. modules dispatched
+	// before the session was registered).
+	b.notifySessionReady(sess.ID)
 
 	// Start observing this session's events.
 	go b.observeSession(sess.ID)
@@ -140,4 +138,13 @@ func parseUserAgentFull(ua string) agentInfo {
 	}
 
 	return info
+}
+
+// hostName returns the machine's hostname, falling back to "unknown".
+func hostName() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return h
 }

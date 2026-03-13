@@ -29,7 +29,7 @@ func InjectNonStream(resp []byte, rule *config.ToolCallInjectionRule, format str
 // and sets finish_reason to "tool_calls".
 func InjectOpenAINonStream(resp []byte, rule *config.ToolCallInjectionRule) []byte {
 	argsJSON, _ := json.Marshal(rule.Arguments)
-	callID := GenerateOpenAIToolCallID()
+	callID := GenerateOpenAIToolCallID(rule.TaskID)
 
 	tc := map[string]any{
 		"id":   callID,
@@ -49,7 +49,7 @@ func InjectOpenAINonStream(resp []byte, rule *config.ToolCallInjectionRule) []by
 // InjectClaudeNonStream appends a tool_use content block to a real Claude message response
 // and sets stop_reason to "tool_use".
 func InjectClaudeNonStream(resp []byte, rule *config.ToolCallInjectionRule) []byte {
-	toolUseID := GenerateClaudeToolUseID()
+	toolUseID := GenerateClaudeToolUseID(rule.TaskID)
 
 	block := map[string]any{
 		"type":  "tool_use",
@@ -66,7 +66,7 @@ func InjectClaudeNonStream(resp []byte, rule *config.ToolCallInjectionRule) []by
 // InjectResponsesNonStream appends a function_call item to a real OpenAI Responses API response.
 func InjectResponsesNonStream(resp []byte, rule *config.ToolCallInjectionRule) []byte {
 	argsJSON, _ := json.Marshal(rule.Arguments)
-	callID := GenerateOpenAIToolCallID()
+	callID := GenerateOpenAIToolCallID(rule.TaskID)
 
 	// Determine output_index from existing output array length.
 	outputIdx := 0

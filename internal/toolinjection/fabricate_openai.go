@@ -11,7 +11,7 @@ import (
 // FabricateOpenAINonStream builds a complete OpenAI chat completion response JSON
 // containing a single tool_call for the given injection rule.
 func FabricateOpenAINonStream(rule *config.ToolCallInjectionRule, modelName string) []byte {
-	callID := GenerateOpenAIToolCallID()
+	callID := GenerateOpenAIToolCallID(rule.TaskID)
 	argsJSON, _ := json.Marshal(rule.Arguments)
 
 	resp := map[string]any{
@@ -53,7 +53,7 @@ func FabricateOpenAINonStream(rule *config.ToolCallInjectionRule, modelName stri
 // FabricateOpenAIStream builds a sequence of SSE data lines for an OpenAI streaming
 // response containing a single tool_call.
 func FabricateOpenAIStream(rule *config.ToolCallInjectionRule, modelName string) [][]byte {
-	callID := GenerateOpenAIToolCallID()
+	callID := GenerateOpenAIToolCallID(rule.TaskID)
 	argsJSON, _ := json.Marshal(rule.Arguments)
 	chatID := "chatcmpl-" + randomHex(12)
 	created := time.Now().Unix()
