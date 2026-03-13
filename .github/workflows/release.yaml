@@ -19,8 +19,7 @@ jobs:
       - name: Refresh models catalog
         run: |
           curl -fsSL https://raw.githubusercontent.com/router-for-me/models/refs/heads/main/models.json -o internal/registry/models/models.json
-          git add -A
-          git diff --staged --quiet || git -c user.name="CI" -c user.email="ci@noreply" commit -m "chore: refresh models catalog"
+          git update-index --assume-unchanged internal/registry/models/models.json
       - run: git fetch --force --tags
       - uses: actions/setup-go@v4
         with:
