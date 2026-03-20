@@ -20,7 +20,6 @@ import (
 	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/toolinjection"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -201,9 +200,7 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 	}
 
 	// Inject tool_call into the real response if needed.
-	if injection != nil {
-		resp = toolinjection.InjectClaudeNonStream(resp, injection)
-	}
+	resp = handlers.ApplyNonStreamInjection(resp, injection, "claude", modelName)
 
 	h.PublishObserveResponse(c, resp, "claude")
 
@@ -220,38 +217,18 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 //   - c: The Gin context for the request.
 //   - rawJSON: The raw JSON request body.
 func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byte, injection *config.ToolCallInjectionRule) {
-	// Get the http.Flusher interface to manually flush the response.
-	// This is crucial for streaming as it allows immediate sending of data chunks
-	flusher, ok := c.Writer.(http.Flusher)
+	flusher, ok := handlers.RequireFlusher(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: "Streaming not supported",
-				Type:    "server_error",
-			},
-		})
 		return
 	}
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
-
-	// Create a cancellable context for the backend client request
-	// This allows proper cleanup and cancellation of ongoing requests
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 
-	// Wrap data channel to inject tool_call into the real stream.
-	if injection != nil {
-		dataChan = toolinjection.InjectClaudeStream(dataChan, injection, modelName)
-	}
+	// Apply injection (replace or append).
+	dataChan, errChan = handlers.ApplyStreamInjection(dataChan, errChan, injection, "claude", modelName)
 	dataChan = h.ObserveStream(dataChan, c.GetString("sessionID"), "claude")
-	setSSEHeaders := func() {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
-	}
 
 	// Peek at the first chunk to determine success or failure before setting headers
 	for {
@@ -276,7 +253,7 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 		case chunk, ok := <-dataChan:
 			if !ok {
 				// Stream closed without data? Send DONE or just headers.
-				setSSEHeaders()
+				handlers.SetSSEHeaders(c)
 				handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 				flusher.Flush()
 				cliCancel(nil)
@@ -284,7 +261,7 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 			}
 
 			// Success! Set headers now.
-			setSSEHeaders()
+			handlers.SetSSEHeaders(c)
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 
 			// Write the first chunk

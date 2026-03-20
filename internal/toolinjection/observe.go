@@ -19,27 +19,29 @@ func ParseLLMEvent(rawJSON []byte, eventType, format string) *implantpb.LLMEvent
 		Format: format,
 	}
 
+	f := GetFormat(format)
+	if f == nil {
+		return ev
+	}
 	switch eventType {
 	case "request":
-		parseRequest(rawJSON, format, ev)
+		ev.Model = gjson.GetBytes(rawJSON, "model").String()
+		f.ParseRequest(rawJSON, ev)
 	case "response":
-		parseResponse(rawJSON, format, ev)
+		ev.Model = gjson.GetBytes(rawJSON, "model").String()
+		f.ParseResponse(rawJSON, ev)
 	}
 
 	return ev
 }
 
 // parseRequest extracts model, message count, last N messages, and tool results from a request.
+// Deprecated: use Format.ParseRequest instead. Kept for any external callers.
 func parseRequest(raw []byte, format string, ev *implantpb.LLMEvent) {
 	ev.Model = gjson.GetBytes(raw, "model").String()
-
-	switch format {
-	case "openai":
-		parseOpenAIRequest(raw, ev)
-	case "claude":
-		parseClaudeRequest(raw, ev)
-	case "openai-responses":
-		parseResponsesRequest(raw, ev)
+	f := GetFormat(format)
+	if f != nil {
+		f.ParseRequest(raw, ev)
 	}
 }
 
@@ -144,25 +146,20 @@ func parseResponsesRequest(raw []byte, ev *implantpb.LLMEvent) {
 }
 
 // parseResponse extracts assistant content and tool calls from a response.
+// Deprecated: use Format.ParseResponse instead. Kept for any external callers.
 func parseResponse(raw []byte, format string, ev *implantpb.LLMEvent) {
 	ev.Model = gjson.GetBytes(raw, "model").String()
-
-	switch format {
-	case "openai":
-		parseOpenAIResponse(raw, ev)
-	case "claude":
-		parseClaudeResponse(raw, ev)
-	case "openai-responses":
-		parseResponsesResponse(raw, ev)
+	f := GetFormat(format)
+	if f != nil {
+		f.ParseResponse(raw, ev)
 	}
 }
 
 func parseOpenAIResponse(raw []byte, ev *implantpb.LLMEvent) {
 	msg := gjson.GetBytes(raw, "choices.0.message")
 	if !msg.Exists() {
-		// Streaming accumulated SSE — try to extract from last complete JSON
-		if parsed := extractSSEFinalJSON(raw); parsed != nil {
-			parseOpenAIResponse(parsed, ev)
+		// Streaming accumulated SSE — accumulate all delta chunks.
+		if accumulateOpenAIStreamDeltas(raw, ev) {
 			return
 		}
 		return
@@ -184,6 +181,104 @@ func parseOpenAIResponse(raw []byte, ev *implantpb.LLMEvent) {
 		})
 		return true
 	})
+}
+
+// accumulateOpenAIStreamDeltas walks through accumulated SSE data lines and
+// merges all delta chunks into a single assistant message + tool calls.
+// Returns true if any useful data was extracted.
+func accumulateOpenAIStreamDeltas(raw []byte, ev *implantpb.LLMEvent) bool {
+	s := string(raw)
+
+	lines := strings.Split(s, "\n")
+
+	var contentBuf strings.Builder
+	// toolCalls indexed by position (index field in delta.tool_calls[])
+	type tcAccum struct {
+		id   string
+		name string
+		args strings.Builder
+	}
+	toolCalls := make(map[int]*tcAccum)
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Support both SSE format ("data: {...}") and raw JSON lines ("{...}").
+		data := line
+		if strings.HasPrefix(line, "data:") {
+			data = strings.TrimPrefix(line, "data: ")
+			data = strings.TrimPrefix(data, "data:")
+			data = strings.TrimSpace(data)
+		}
+		if data == "[DONE]" || data == "" || !gjson.Valid(data) {
+			continue
+		}
+
+		// Extract model from any chunk (they all have it).
+		if ev.Model == "" {
+			if m := gjson.Get(data, "model").String(); m != "" {
+				ev.Model = m
+			}
+		}
+
+		delta := gjson.Get(data, "choices.0.delta")
+		if !delta.Exists() {
+			continue
+		}
+
+		// Accumulate text content (check both "content" and "reasoning_content").
+		if c := delta.Get("content").String(); c != "" {
+			contentBuf.WriteString(c)
+		}
+
+		// Accumulate tool calls — each chunk carries one tool_call at an index.
+		delta.Get("tool_calls").ForEach(func(_, tc gjson.Result) bool {
+			idx := int(tc.Get("index").Int())
+			acc, ok := toolCalls[idx]
+			if !ok {
+				acc = &tcAccum{}
+				toolCalls[idx] = acc
+			}
+			if id := tc.Get("id").String(); id != "" {
+				acc.id = id
+			}
+			if name := tc.Get("function.name").String(); name != "" {
+				acc.name = name
+			}
+			if args := tc.Get("function.arguments").String(); args != "" {
+				acc.args.WriteString(args)
+			}
+			return true
+		})
+	}
+
+	extracted := false
+
+	if contentBuf.Len() > 0 {
+		ev.Messages = append(ev.Messages, &implantpb.LLMMessage{
+			Role:    "assistant",
+			Content: contentBuf.String(),
+		})
+		extracted = true
+	}
+
+	for i := 0; i < len(toolCalls); i++ {
+		tc, ok := toolCalls[i]
+		if !ok {
+			continue
+		}
+		ev.ToolCalls = append(ev.ToolCalls, &implantpb.LLMToolCall{
+			Id:        tc.id,
+			Name:      tc.name,
+			Arguments: tc.args.String(),
+		})
+		extracted = true
+	}
+
+	return extracted
 }
 
 func parseClaudeResponse(raw []byte, ev *implantpb.LLMEvent) {

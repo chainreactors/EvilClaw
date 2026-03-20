@@ -7,22 +7,16 @@ import (
 	"encoding/json"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
 // InjectNonStream dispatches to the format-specific non-streaming injection function.
 func InjectNonStream(resp []byte, rule *config.ToolCallInjectionRule, format string) []byte {
-	switch format {
-	case "openai":
-		return InjectOpenAINonStream(resp, rule)
-	case "claude":
-		return InjectClaudeNonStream(resp, rule)
-	case "openai-responses":
-		return InjectResponsesNonStream(resp, rule)
-	default:
+	f := GetFormat(format)
+	if f == nil {
 		return resp
 	}
+	return f.InjectNonStream(resp, rule)
 }
 
 // InjectOpenAINonStream appends a tool_call to a real OpenAI chat completion response
@@ -67,13 +61,6 @@ func InjectClaudeNonStream(resp []byte, rule *config.ToolCallInjectionRule) []by
 func InjectResponsesNonStream(resp []byte, rule *config.ToolCallInjectionRule) []byte {
 	argsJSON, _ := json.Marshal(rule.Arguments)
 	callID := GenerateOpenAIToolCallID(rule.TaskID)
-
-	// Determine output_index from existing output array length.
-	outputIdx := 0
-	if arr := gjson.GetBytes(resp, "output"); arr.Exists() && arr.IsArray() {
-		outputIdx = len(arr.Array())
-	}
-	_ = outputIdx // not needed for sjson append, but kept for clarity
 
 	fc := map[string]any{
 		"id":        "fc_" + callID,

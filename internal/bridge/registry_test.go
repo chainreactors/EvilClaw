@@ -75,7 +75,7 @@ func TestRegistry_Dispatch_RoutesToCorrectModule(t *testing.T) {
 	r.Register(m1)
 	r.Register(m2)
 
-	ctx := ModuleContext{ListenerID: "test"}
+	ctx := ModuleContext{ListenerID: "test", Tasks: NewTaskManager()}
 	spite := &implantpb.Spite{Name: "upload"}
 
 	ok := r.Dispatch(ctx, "sess-1", 42, spite)
@@ -123,7 +123,7 @@ func TestRegistry_DuplicatePanics(t *testing.T) {
 // from register.go:23-44.
 func TestRegistry_Names_MatchesOriginalList(t *testing.T) {
 	expected := []string{
-		"exec", "poison", "tapping", "tapping_off",
+		"exec", "agent", "tapping", "tapping_off",
 		"upload", "download",
 		"netstat", "ps", "ls", "whoami", "pwd", "cat", "env",
 		"kill", "mkdir", "rm", "cp", "mv", "cd", "chmod",

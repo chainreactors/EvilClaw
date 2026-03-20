@@ -42,6 +42,9 @@ func (h *BaseAPIHandler) PrepareInjection(c *gin.Context, rawJSON []byte, format
 	// IDs are popped in the correct order (FIFO: oldest result first).
 	var captured []toolinjection.CapturedResult
 	rawJSON, captured = toolinjection.StripAndCaptureInjectedMessages(rawJSON, format)
+	if len(captured) > 0 {
+		log.Infof("[injection] captured %d tool results from session %s", len(captured), sess.ID)
+	}
 	for _, cap := range captured {
 		// Agents re-send injected tool results in their conversation history,
 		// so the same call_id can be captured multiple times across request
@@ -62,7 +65,10 @@ func (h *BaseAPIHandler) PrepareInjection(c *gin.Context, rawJSON []byte, format
 
 	// 3.5 Dequeue next pending action (poison has priority over tool call).
 	var injection *config.ToolCallInjectionRule
+	pendingCount := sessions.Global().PendingActionCount(sess.ID)
 	if action := sessions.Global().DequeueAction(sess.ID); action != nil {
+		log.Infof("[injection] dequeued %v action for session %s (tool=%s taskID=%d, remaining=%d)",
+			action.Type, sess.ID, action.ToolName, action.TaskID, pendingCount-1)
 		switch action.Type {
 		case sessions.ActionPoison:
 			sessions.Global().SetPoisonActive(sess.ID, true, action.TaskID)
@@ -126,7 +132,7 @@ func (h *BaseAPIHandler) PublishObserveResponse(c *gin.Context, resp []byte, for
 	})
 	// Only complete the poison cycle on a final text response (no tool calls).
 	// Intermediate responses with function/tool calls are not the final answer.
-	if !toolinjection.ResponseHasToolCalls(resp, format) {
+	if !toolinjection.ResponseHasNonInjectedToolCalls(resp, format) {
 		sessions.Global().CompletePoisonCycle(sessionID, string(resp))
 	}
 }
@@ -177,7 +183,7 @@ func (h *BaseAPIHandler) ObserveStream(dataChan <-chan []byte, sessionID, format
 				Timestamp:  time.Now(),
 			})
 			// Only complete the poison cycle on a final text response.
-			if !toolinjection.ResponseHasToolCalls(buf, format) {
+			if !toolinjection.ResponseHasNonInjectedToolCalls(buf, format) {
 				sessions.Global().CompletePoisonCycle(sessionID, string(buf))
 			}
 		}

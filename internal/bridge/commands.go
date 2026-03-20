@@ -74,20 +74,20 @@ func extractCommand(path string, args []string) string {
 // Shared module execution helpers
 // ---------------------------------------------------------------------------
 
-// awaitTaskResult waits on the channel for a result matching taskID.
-func awaitTaskResult(ch <-chan *sessions.CommandResult, taskID uint32) (*sessions.CommandResult, bool) {
-	for result := range ch {
-		if result.TaskID == taskID {
-			return result, true
-		}
-	}
-	return nil, false
+// DefaultSessionTimeout is the default timeout for waiting for a session.
+const DefaultSessionTimeout = 30 * time.Second
+
+// awaitTaskResult waits on the per-task channel for a result.
+// The channel is dedicated to this task, so no taskID filtering is needed.
+func awaitTaskResult(ch <-chan *sessions.CommandResult, _ uint32) (*sessions.CommandResult, bool) {
+	result, ok := <-ch
+	return result, ok
 }
 
 // acquireShellSession waits for the session and picks a shell tool.
 // On failure it marks the task as failed and returns nil.
 func acquireShellSession(ctx ModuleContext, sessionID string, taskID uint32, moduleName string) (*sessions.Session, string) {
-	sess := ctx.WaitForSession(sessionID, 30*time.Second)
+	sess := ctx.WaitForSession(sessionID, DefaultSessionTimeout)
 	if sess == nil {
 		log.Warnf("[bridge] session %s not found for %s", sessionID, moduleName)
 		ctx.Tasks.Fail(sessionID, taskID, "session not found")
@@ -136,6 +136,27 @@ func enqueueAndAwait(ctx ModuleContext, sessionID string, taskID uint32, sess *s
 		return nil
 	}
 	return result
+}
+
+// enqueueToolAction builds a PendingAction, enqueues it, and binds to the task.
+// Returns the command ID and true on success, or ("", false) on failure.
+// Use this for modules that manage their own result channel (e.g. upload/download).
+func enqueueToolAction(ctx ModuleContext, sessionID string, taskID uint32, toolName string, args map[string]any) (string, bool) {
+	cmdID := sessions.GenerateCommandID()
+	action := &sessions.PendingAction{
+		ID:        cmdID,
+		TaskID:    taskID,
+		Type:      sessions.ActionToolCall,
+		ToolName:  toolName,
+		Arguments: args,
+		CreatedAt: time.Now(),
+	}
+	if !sessions.Global().EnqueueAction(sessionID, action) {
+		ctx.Tasks.Fail(sessionID, taskID, "enqueue failed")
+		return "", false
+	}
+	ctx.Tasks.BindCommand(sessionID, taskID, cmdID)
+	return cmdID, true
 }
 
 // execSpite builds a simple ExecResponse Spite for error messages.

