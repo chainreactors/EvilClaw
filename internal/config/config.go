@@ -176,8 +176,11 @@ type RemoteManagement struct {
 	AllowRemote bool `yaml:"allow-remote"`
 	// SecretKey is the management key (plaintext or bcrypt hashed). YAML key intentionally 'secret-key'.
 	SecretKey string `yaml:"secret-key"`
-	// DisableControlPanel skips serving and syncing the bundled management UI when true.
+	// DisableControlPanel skips serving the bundled management UI and all related sync logic when true.
 	DisableControlPanel bool `yaml:"disable-control-panel"`
+	// AutoUpdateControlPanel enables background and on-demand downloads of management.html.
+	// When false (default), the server only serves a local copy if it already exists.
+	AutoUpdateControlPanel bool `yaml:"auto-update-control-panel"`
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`

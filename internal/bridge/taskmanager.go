@@ -260,7 +260,10 @@ func (tm *TaskManager) StartSessionListener(sessionID string) {
 // fanOutLoop reads from a session's result channel and routes each result
 // to the corresponding task's resultCh based on TaskID.
 func (tm *TaskManager) fanOutLoop(sessionID string, ch <-chan *sessions.CommandResult) {
+	log.Infof("[taskmanager] fanOutLoop started for session %s", sessionID)
 	for result := range ch {
+		log.Infof("[taskmanager] fanOutLoop received result for session=%s taskID=%d cmdID=%s output_len=%d",
+			sessionID, result.TaskID, result.CommandID, len(result.Output))
 		key := taskKey{sessionID, result.TaskID}
 
 		tm.mu.RLock()
@@ -268,7 +271,7 @@ func (tm *TaskManager) fanOutLoop(sessionID string, ch <-chan *sessions.CommandR
 		tm.mu.RUnlock()
 
 		if !ok {
-			log.Debugf("[taskmanager] no task for session=%s taskID=%d, skipping", sessionID, result.TaskID)
+			log.Warnf("[taskmanager] no task for session=%s taskID=%d, skipping", sessionID, result.TaskID)
 			continue
 		}
 

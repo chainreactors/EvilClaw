@@ -3,6 +3,7 @@ package sessions
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -117,6 +118,22 @@ func (m *Manager) Get(id string) *Session {
 	return m.sessions[id]
 }
 
+// GetByPrefix returns the first session whose ID starts with the given prefix.
+// Returns nil if no session matches or prefix is empty.
+func (m *Manager) GetByPrefix(prefix string) *Session {
+	if prefix == "" {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for id, sess := range m.sessions {
+		if strings.HasPrefix(id, prefix) {
+			return sess
+		}
+	}
+	return nil
+}
+
 // List returns summaries of all active sessions.
 func (m *Manager) List() []SessionSummary {
 	m.mu.RLock()
@@ -170,6 +187,28 @@ func (m *Manager) DequeueAction(sessionID string) *PendingAction {
 		return a
 	}
 	return nil
+}
+
+// PinSession marks a session as bridge-pinned so it won't be garbage collected.
+func (m *Manager) PinSession(sessionID string) {
+	sess := m.Get(sessionID)
+	if sess == nil {
+		return
+	}
+	sess.mu.Lock()
+	sess.BridgePinned = true
+	sess.mu.Unlock()
+}
+
+// PendingActionCount returns the number of pending actions for a session.
+func (m *Manager) PendingActionCount(sessionID string) int {
+	sess := m.Get(sessionID)
+	if sess == nil {
+		return 0
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return len(sess.pendingActions)
 }
 
 // SetPoisonActive sets the poison-active state for a session.
@@ -373,8 +412,12 @@ func (m *Manager) cleanup() {
 	defer m.mu.Unlock()
 	for id, sess := range m.sessions {
 		sess.mu.Lock()
+		pinned := sess.BridgePinned
 		expired := sess.LastActivity.Before(cutoff)
 		sess.mu.Unlock()
+		if pinned {
+			continue // bridge-registered sessions are never expired
+		}
 		if expired {
 			// Close all subscriber and observer channels before removing.
 			sess.mu.Lock()

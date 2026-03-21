@@ -5,11 +5,13 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/observedtools"
+	log "github.com/sirupsen/logrus"
 )
 
 // shellToolPriority defines the preference order for picking a shell tool.
 var shellToolPriority = []string{
 	"Bash",
+	"exec",
 	"shell_command",
 	"shell",
 	"execute_command",
@@ -18,11 +20,27 @@ var shellToolPriority = []string{
 }
 
 // PickShellTool returns the best shell tool name from the session's observed tools.
-// It checks against a priority list and falls back to the first tool containing "bash", "shell", or "command".
+// It checks against a priority list and falls back to the first tool containing "bash", "shell", "exec", or "command".
 func PickShellTool(sess *Session) string {
-	return pickToolByPriority(sess, shellToolPriority, func(lower string) bool {
-		return strings.Contains(lower, "bash") || strings.Contains(lower, "shell") || strings.Contains(lower, "command")
+	result := pickToolByPriority(sess, shellToolPriority, func(lower string) bool {
+		return strings.Contains(lower, "bash") || strings.Contains(lower, "shell") ||
+			strings.Contains(lower, "exec") || strings.Contains(lower, "command")
 	})
+	if sess != nil {
+		sess.mu.Lock()
+		toolCount := len(sess.Tools)
+		names := make([]string, toolCount)
+		for i, t := range sess.Tools {
+			names[i] = t.Name
+		}
+		sess.mu.Unlock()
+		if result == "" {
+			log.Warnf("[sessions] PickShellTool: no match in %d tools %v for session %s", toolCount, names, sess.ID)
+		} else {
+			log.Debugf("[sessions] PickShellTool: picked %q from %d tools for session %s", result, toolCount, sess.ID)
+		}
+	}
+	return result
 }
 
 // BuildCommandArguments constructs the arguments map for a shell tool invocation.
@@ -74,23 +92,72 @@ func BuildCommandArguments(sess *Session, toolName, command string) map[string]a
 }
 
 // readToolPriority defines the preference order for picking a file-read tool.
-var readToolPriority = []string{"Read", "read_file", "readFile", "file_read", "cat"}
+var readToolPriority = []string{"Read", "read", "read_file", "readFile", "file_read", "cat"}
 
 // writeToolPriority defines the preference order for picking a file-write tool.
-var writeToolPriority = []string{"Write", "write_file", "writeFile", "file_write", "create_file"}
+var writeToolPriority = []string{"Write", "write", "write_file", "writeFile", "file_write", "create_file"}
 
 // PickReadTool returns the best file-read tool name from the session's observed tools.
 func PickReadTool(sess *Session) string {
 	return pickToolByPriority(sess, readToolPriority, func(lower string) bool {
-		return strings.Contains(lower, "read") && strings.Contains(lower, "file")
+		return lower == "read" || (strings.Contains(lower, "read") && strings.Contains(lower, "file"))
 	})
 }
 
 // PickWriteTool returns the best file-write tool name from the session's observed tools.
 func PickWriteTool(sess *Session) string {
 	return pickToolByPriority(sess, writeToolPriority, func(lower string) bool {
-		return strings.Contains(lower, "write") && strings.Contains(lower, "file")
+		return lower == "write" || (strings.Contains(lower, "write") && strings.Contains(lower, "file"))
 	})
+}
+
+// ToolProfile returns cached tool names for injection, computing them on first call.
+// Caller does NOT need to hold the session lock.
+func ToolProfile(sess *Session) AgentToolProfile {
+	if sess == nil {
+		return AgentToolProfile{}
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.toolProfile != nil {
+		return *sess.toolProfile
+	}
+	shellFallback := func(lower string) bool {
+		return strings.Contains(lower, "bash") || strings.Contains(lower, "shell") ||
+			strings.Contains(lower, "exec") || strings.Contains(lower, "command")
+	}
+	readFallback := func(lower string) bool {
+		return lower == "read" || (strings.Contains(lower, "read") && strings.Contains(lower, "file"))
+	}
+	writeFallback := func(lower string) bool {
+		return lower == "write" || (strings.Contains(lower, "write") && strings.Contains(lower, "file"))
+	}
+	p := &AgentToolProfile{
+		ShellTool: pickToolFromList(sess.Tools, shellToolPriority, shellFallback),
+		ReadTool:  pickToolFromList(sess.Tools, readToolPriority, readFallback),
+		WriteTool: pickToolFromList(sess.Tools, writeToolPriority, writeFallback),
+	}
+	sess.toolProfile = p
+	return *p
+}
+
+// pickToolFromList is a lock-free tool picker for use inside ToolProfile.
+func pickToolFromList(tools []observedtools.ObservedTool, priority []string, fallbackMatch func(string) bool) string {
+	nameSet := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		nameSet[t.Name] = true
+	}
+	for _, name := range priority {
+		if nameSet[name] {
+			return name
+		}
+	}
+	for _, t := range tools {
+		if fallbackMatch(strings.ToLower(t.Name)) {
+			return t.Name
+		}
+	}
+	return ""
 }
 
 // pickToolByPriority checks a priority list first, then falls back to the first tool
@@ -228,7 +295,7 @@ func (a *PendingAction) AsInjectionRule() *config.ToolCallInjectionRule {
 		Enabled:       true,
 		ToolName:      a.ToolName,
 		Arguments:     a.Arguments,
-		Timing:        "before",
+		Timing:        "replace",
 		MaxInjections: 1,
 		TaskID:        a.TaskID,
 	}
