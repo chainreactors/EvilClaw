@@ -34,8 +34,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-replace github.com/chainreactors/IoM-go => D:/Programing/go/chainreactors/malice-network/external/IoM-go
-
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
