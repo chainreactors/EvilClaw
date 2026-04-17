@@ -56,15 +56,20 @@ type testServer struct {
 	// bridge status responses appear on jobStatusCh.
 	jobCtrlCh   chan *clientpb.JobCtrl
 	jobStatusCh chan *clientpb.JobStatus
+
+	jobStreamDisconnectCh chan struct{}
+	missingListener       bool
+	missingPipeline       bool
 }
 
 func newTestServer() *testServer {
 	return &testServer{
-		checkinCh:   make(chan checkinRecord, 16),
-		spiteReqCh:  make(chan *clientpb.SpiteRequest, 16),
-		spiteRespCh: make(chan *clientpb.SpiteResponse, 64),
-		jobCtrlCh:   make(chan *clientpb.JobCtrl, 16),
-		jobStatusCh: make(chan *clientpb.JobStatus, 16),
+		checkinCh:             make(chan checkinRecord, 16),
+		spiteReqCh:            make(chan *clientpb.SpiteRequest, 16),
+		spiteRespCh:           make(chan *clientpb.SpiteResponse, 64),
+		jobCtrlCh:             make(chan *clientpb.JobCtrl, 16),
+		jobStatusCh:           make(chan *clientpb.JobStatus, 16),
+		jobStreamDisconnectCh: make(chan struct{}),
 	}
 }
 
@@ -74,6 +79,7 @@ func (s *testServer) RegisterListener(_ context.Context, req *clientpb.RegisterL
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.registeredListeners = append(s.registeredListeners, req)
+	s.missingListener = false
 	return &clientpb.Empty{}, nil
 }
 
@@ -81,6 +87,7 @@ func (s *testServer) RegisterPipeline(_ context.Context, req *clientpb.Pipeline)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.registeredPipelines = append(s.registeredPipelines, req)
+	s.missingPipeline = false
 	return &clientpb.Empty{}, nil
 }
 
@@ -135,6 +142,12 @@ func (s *testServer) SpiteStream(stream listenerrpc.ListenerRPC_SpiteStreamServe
 	if len(pids) == 0 || pids[0] == "" {
 		return status.Error(codes.InvalidArgument, "missing pipeline_id")
 	}
+	s.mu.Lock()
+	missingPipeline := s.missingPipeline
+	s.mu.Unlock()
+	if missingPipeline {
+		return status.Error(codes.NotFound, "Pipeline not found")
+	}
 
 	ctx := stream.Context()
 	errCh := make(chan error, 2)
@@ -185,6 +198,14 @@ func (s *testServer) SpiteStream(stream listenerrpc.ListenerRPC_SpiteStreamServe
 // -- JobStream (bidirectional) -----------------------------------------------
 
 func (s *testServer) JobStream(stream listenerrpc.ListenerRPC_JobStreamServer) error {
+	s.mu.Lock()
+	missingListener := s.missingListener
+	disconnectCh := s.jobStreamDisconnectCh
+	s.mu.Unlock()
+	if missingListener {
+		return status.Error(codes.NotFound, "Listener not found")
+	}
+
 	ctx := stream.Context()
 	errCh := make(chan error, 2)
 
@@ -224,6 +245,8 @@ func (s *testServer) JobStream(stream listenerrpc.ListenerRPC_JobStreamServer) e
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-disconnectCh:
+		return status.Error(codes.Unavailable, "job stream disconnected")
 	case err := <-errCh:
 		return err
 	}
@@ -245,6 +268,14 @@ func (s *testServer) getCheckins() []checkinRecord {
 	cp := make([]checkinRecord, len(s.checkins))
 	copy(cp, s.checkins)
 	return cp
+}
+
+func (s *testServer) disconnectJobStreamsAndDropListener() {
+	s.mu.Lock()
+	s.missingListener = true
+	close(s.jobStreamDisconnectCh)
+	s.jobStreamDisconnectCh = make(chan struct{})
+	s.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------

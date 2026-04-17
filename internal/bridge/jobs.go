@@ -16,7 +16,7 @@ func (b *Bridge) handleJobStream() {
 			if b.ctx.Err() != nil {
 				return // bridge is shutting down
 			}
-			b.reconnectJobStream()
+			b.reconnectJobStream(err)
 			continue
 		}
 
@@ -43,7 +43,7 @@ func (b *Bridge) handleJobStream() {
 			if b.ctx.Err() != nil {
 				return
 			}
-			b.reconnectJobStream()
+			b.reconnectJobStream(err)
 		}
 	}
 }

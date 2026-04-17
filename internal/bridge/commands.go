@@ -23,7 +23,7 @@ func (b *Bridge) handleSpiteRecv() {
 			if b.ctx.Err() != nil {
 				return // bridge is shutting down
 			}
-			b.reconnectSpiteStream()
+			b.reconnectSpiteStream(err)
 			ctx = b.moduleContext() // refresh context with new stream
 			continue
 		}

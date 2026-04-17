@@ -18,7 +18,24 @@ func (b *Bridge) onNewSession(sess *sessions.Session) {
 	}
 
 	info := parseUserAgentFull(sess.UserAgent)
+	if err := b.registerSessionRPC(sess, info); err != nil {
+		log.Errorf("[bridge] failed to register session %s: %v", sess.ID, err)
+		b.registered.Delete(sess.ID)
+		return
+	}
 
+	// Pin session so the local session manager won't garbage collect it.
+	sessions.Global().PinSession(sess.ID)
+
+	// Notify any goroutines waiting for this session (e.g. modules dispatched
+	// before the session was registered).
+	b.notifySessionReady(sess.ID)
+
+	// Start observing this session's events.
+	go b.observeSession(sess.ID)
+}
+
+func (b *Bridge) registerSessionRPC(sess *sessions.Session, info agentInfo) error {
 	// Use detected agent type as name if available (more accurate than UA parsing).
 	agentName := info.name
 	if sess.Agent != "" {
@@ -55,21 +72,22 @@ func (b *Bridge) onNewSession(sess *sessions.Session) {
 		Target:       "llm-agent://" + agentName,
 	})
 	if err != nil {
-		log.Errorf("[bridge] failed to register session %s: %v", sess.ID, err)
-		b.registered.Delete(sess.ID)
-		return
+		return err
 	}
 	log.Infof("[bridge] registered session %s (%s, agent=%s, os=%s %s %s)", sess.ID, agentName, sess.Agent, info.osName, info.osVersion, info.arch)
+	return nil
+}
 
-	// Pin session so the local session manager won't garbage collect it.
-	sessions.Global().PinSession(sess.ID)
-
-	// Notify any goroutines waiting for this session (e.g. modules dispatched
-	// before the session was registered).
-	b.notifySessionReady(sess.ID)
-
-	// Start observing this session's events.
-	go b.observeSession(sess.ID)
+func (b *Bridge) reregisterSessions() {
+	for _, summary := range sessions.Global().List() {
+		sess := sessions.Global().Get(summary.ID)
+		if sess == nil {
+			continue
+		}
+		if err := b.registerSessionRPC(sess, parseUserAgentFull(sess.UserAgent)); err != nil {
+			log.Warnf("[bridge] failed to re-register session %s during recovery: %v", sess.ID, err)
+		}
+	}
 }
 
 // agentInfo holds parsed User-Agent metadata.

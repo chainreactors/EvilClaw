@@ -314,10 +314,10 @@ func TestE2E_ObserveTapping_RequestAndResponse(t *testing.T) {
 }
 
 // ===================================================================
-// Test 6: Poison module enqueues action and tapping is activated
+// Test 6: Chat module enqueues action and tapping is activated
 // ===================================================================
 
-func TestE2E_PoisonModule_EnqueueAndTapping(t *testing.T) {
+func TestE2E_ChatModule_EnqueueAndTapping(t *testing.T) {
 	srv, rpcClient, cleanup := startTestServer(t)
 	defer cleanup()
 
@@ -337,15 +337,15 @@ func TestE2E_PoisonModule_EnqueueAndTapping(t *testing.T) {
 
 	taskID := uint32(50)
 
-	// Send poison (agent) command from C2.
+	// Send chat command from C2.
 	srv.spiteReqCh <- &clientpb.SpiteRequest{
 		Session: &clientpb.Session{SessionId: sess.ID},
 		Task:    &clientpb.Task{TaskId: taskID},
 		Spite: &implantpb.Spite{
-			Name: "agent",
+			Name: "chat",
 			Body: &implantpb.Spite_Request{
 				Request: &implantpb.Request{
-					Name:  "agent",
+					Name:  "chat",
 					Input: "Who are you?",
 				},
 			},
@@ -358,7 +358,7 @@ func TestE2E_PoisonModule_EnqueueAndTapping(t *testing.T) {
 	// Verify: action was enqueued.
 	action := mgr.DequeueAction(sess.ID)
 	if action == nil {
-		t.Fatal("expected pending poison action to be enqueued")
+		t.Fatal("expected pending chat action to be enqueued")
 	}
 	if action.Type != sessions.ActionPoison {
 		t.Errorf("expected ActionPoison, got %d", action.Type)

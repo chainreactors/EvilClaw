@@ -123,7 +123,7 @@ func TestRegistry_DuplicatePanics(t *testing.T) {
 // from register.go:23-44.
 func TestRegistry_Names_MatchesOriginalList(t *testing.T) {
 	expected := []string{
-		"exec", "agent", "tapping", "tapping_off",
+		"exec", "chat", "tapping", "tapping_off",
 		"upload", "download",
 		"netstat", "ps", "ls", "whoami", "pwd", "cat", "env",
 		"kill", "mkdir", "rm", "cp", "mv", "cd", "chmod",

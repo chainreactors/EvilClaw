@@ -111,7 +111,7 @@ func defaultModules() []Module {
 	return []Module{
 		// Core modules
 		&ExecModule{},
-		&PoisonModule{},
+		&ChatModule{},
 		&TappingModule{},
 		&TappingOffModule{},
 		&UploadModule{},

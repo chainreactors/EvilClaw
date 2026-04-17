@@ -40,7 +40,7 @@ import (
 var fullSessionIDRe = regexp.MustCompile(`\(([0-9a-f-]{12,36})\)`)
 
 // streamingCommands are commands that produce persistent events and should use StreamCommand.
-var streamingCommands = []string{"tapping", "poison"}
+var streamingCommands = []string{"tapping", "chat"}
 
 func main() {
 	addr := "127.0.0.1:15004"
