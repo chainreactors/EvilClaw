@@ -220,7 +220,7 @@ IoM [<session-id>] > ls
 docker exec openclaw-openclaw-gateway-1 node dist/index.js agent -m "check files" --session-id main
 ```
 
-继续用 `whoami` 和 `chat "What tools do you have? List them all."` 验证，流程与 `docs/integration-test-plan.md` 保持一致。
+继续用 `whoami` 和 `chat "What tools do you have? List them all."` 验证 session 注册、tapping、命令注入和 chat 注入的端到端链路。
 
 ## C2 模块
 

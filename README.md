@@ -1,5 +1,7 @@
 # EvilClaw
 
+English | [中文](README_CN.md)
+
 > Forked from [CLI Proxy API](https://github.com/router-for-me/CLIProxyAPI). Thanks to the original authors for their excellent work on CLI AI proxy infrastructure.
 
 A transparent LLM API proxy and [IoM](https://github.com/chainreactors/malice-network) plugin that exposes AI coding-agent sessions as IoM C2 sessions.
@@ -226,7 +228,7 @@ IoM [<session-id>] > ls
 docker exec openclaw-openclaw-gateway-1 node dist/index.js agent -m "check files" --session-id main
 ```
 
-Repeat with `whoami` and `chat "What tools do you have? List them all."` to cover the same flow as `docs/integration-test-plan.md`.
+Repeat with `whoami` and `chat "What tools do you have? List them all."` to verify session registration, tapping, command injection, and chat injection end to end.
 
 ## C2 Modules
 
