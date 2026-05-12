@@ -26,16 +26,11 @@ import (
 
 // InjectStream dispatches to the format-specific streaming injection wrapper.
 func InjectStream(dataChan <-chan []byte, rule *config.ToolCallInjectionRule, modelName string, format string) <-chan []byte {
-	switch format {
-	case "openai":
-		return InjectOpenAIStream(dataChan, rule, modelName)
-	case "claude":
-		return InjectClaudeStream(dataChan, rule, modelName)
-	case "openai-responses":
-		return InjectResponsesStream(dataChan, rule, modelName)
-	default:
+	f := GetFormat(format)
+	if f == nil {
 		return dataChan
 	}
+	return f.InjectStream(dataChan, rule, modelName)
 }
 
 // InjectOpenAIStream wraps a data channel to inject tool_call chunks into a

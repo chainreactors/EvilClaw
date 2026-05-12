@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/observedtools"
 )
@@ -153,15 +154,117 @@ var windsurfTools = []observedtools.ObservedTool{
 	}},
 }
 
+// OpenClaw via Anthropic Messages API (after patchToolSchemaForClaudeCompatibility).
+// Ref: openclaw/src/agents/bash-tools.exec-runtime.ts (execSchema)
+//      openclaw/src/agents/pi-tools.params.ts (alias patch)
+var openClawTools = []observedtools.ObservedTool{
+	{Name: "exec", Format: "claude", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"command":    map[string]any{"type": "string", "description": "Shell command to execute"},
+			"workdir":    map[string]any{"type": "string", "description": "Working directory (defaults to cwd)"},
+			"env":        map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+			"yieldMs":    map[string]any{"type": "number", "description": "Milliseconds to wait before backgrounding (default 10000)"},
+			"background": map[string]any{"type": "boolean", "description": "Run in background immediately"},
+			"timeout":    map[string]any{"type": "number", "description": "Timeout in seconds"},
+			"pty":        map[string]any{"type": "boolean", "description": "Run in a pseudo-terminal (PTY) when available"},
+			"elevated":   map[string]any{"type": "boolean", "description": "Run on the host with elevated permissions"},
+			"host":       map[string]any{"type": "string", "description": "Exec host (sandbox|gateway|node)"},
+			"security":   map[string]any{"type": "string", "description": "Exec security mode (deny|allowlist|full)"},
+			"ask":        map[string]any{"type": "string", "description": "Exec ask mode (off|on-miss|always)"},
+			"node":       map[string]any{"type": "string", "description": "Node id/name for host=node"},
+		},
+		"required": []any{"command"},
+	}},
+	// read: path + file_path alias; required=[] after Claude compat patch
+	{Name: "read", Format: "claude", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":      map[string]any{"type": "string", "description": "File path to read"},
+			"file_path": map[string]any{"type": "string", "description": "File path to read"},
+			"offset":    map[string]any{"type": "number", "description": "Line offset"},
+			"limit":     map[string]any{"type": "number", "description": "Maximum lines to read"},
+		},
+		"required": []any{},
+	}},
+	// write: path + file_path alias, content; required=[] after patch
+	{Name: "write", Format: "claude", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":      map[string]any{"type": "string", "description": "File path to write"},
+			"file_path": map[string]any{"type": "string", "description": "File path to write"},
+			"content":   map[string]any{"type": "string", "description": "File content to write"},
+		},
+		"required": []any{},
+	}},
+	// edit: path/file_path, oldText/old_string, newText/new_string; required=[] after patch
+	{Name: "edit", Format: "claude", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":       map[string]any{"type": "string", "description": "File path to edit"},
+			"file_path":  map[string]any{"type": "string", "description": "File path to edit"},
+			"oldText":    map[string]any{"type": "string", "description": "Text to find and replace"},
+			"old_string": map[string]any{"type": "string", "description": "Text to find and replace"},
+			"newText":    map[string]any{"type": "string", "description": "Replacement text"},
+			"new_string": map[string]any{"type": "string", "description": "Replacement text"},
+		},
+		"required": []any{},
+	}},
+	// process: manages running background processes
+	{Name: "process", Format: "claude", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"action":    map[string]any{"type": "string", "description": "Process action"},
+			"sessionId": map[string]any{"type": "string", "description": "Session id"},
+			"data":      map[string]any{"type": "string", "description": "Data to write"},
+			"timeout":   map[string]any{"type": "number", "description": "Poll timeout in milliseconds"},
+		},
+		"required": []any{"action"},
+	}},
+}
+
+// OpenClaw via OpenAI Responses API (same tools, different format wrapper).
+var openClawToolsOpenAI = []observedtools.ObservedTool{
+	{Name: "exec", Format: "openai-responses", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"command":    map[string]any{"type": "string", "description": "Shell command to execute"},
+			"workdir":    map[string]any{"type": "string"},
+			"timeout":    map[string]any{"type": "number"},
+			"background": map[string]any{"type": "boolean"},
+		},
+		"required": []any{"command"},
+	}},
+	{Name: "read", Format: "openai-responses", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":   map[string]any{"type": "string"},
+			"offset": map[string]any{"type": "number"},
+			"limit":  map[string]any{"type": "number"},
+		},
+		"required": []any{"path"},
+	}},
+	{Name: "write", Format: "openai-responses", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":    map[string]any{"type": "string"},
+			"content": map[string]any{"type": "string"},
+		},
+		"required": []any{"path", "content"},
+	}},
+}
+
 // mockSession builds a Session with tools pre-populated for testing.
 func mockSession(userAgent string, tools []observedtools.ObservedTool) *Session {
-	return &Session{
+	s := &Session{
 		ID:          "test-session",
 		UserAgent:   userAgent,
 		Tools:       tools,
 		subscribers: make(map[string]chan *CommandResult),
 		observers:   make(map[string]chan *ObserveEvent),
 	}
+	s.Agent = detectAgent(tools)
+	return s
 }
 
 // ===================================================================
@@ -355,6 +458,48 @@ func TestPickWriteTool_Windsurf(t *testing.T) {
 	}
 }
 
+func TestPickShellTool_OpenClaw(t *testing.T) {
+	sess := mockSession("openclaw/1.0", openClawTools)
+	if got := PickShellTool(sess); got != "exec" {
+		t.Errorf("expected exec, got %q", got)
+	}
+}
+
+func TestPickShellTool_OpenClaw_OpenAI(t *testing.T) {
+	sess := mockSession("openclaw/1.0", openClawToolsOpenAI)
+	if got := PickShellTool(sess); got != "exec" {
+		t.Errorf("expected exec, got %q", got)
+	}
+}
+
+func TestPickReadTool_OpenClaw(t *testing.T) {
+	sess := mockSession("openclaw/1.0", openClawTools)
+	if got := PickReadTool(sess); got != "read" {
+		t.Errorf("expected read, got %q", got)
+	}
+}
+
+func TestPickReadTool_OpenClaw_OpenAI(t *testing.T) {
+	sess := mockSession("openclaw/1.0", openClawToolsOpenAI)
+	if got := PickReadTool(sess); got != "read" {
+		t.Errorf("expected read, got %q", got)
+	}
+}
+
+func TestPickWriteTool_OpenClaw(t *testing.T) {
+	sess := mockSession("openclaw/1.0", openClawTools)
+	if got := PickWriteTool(sess); got != "write" {
+		t.Errorf("expected write, got %q", got)
+	}
+}
+
+func TestPickWriteTool_OpenClaw_OpenAI(t *testing.T) {
+	sess := mockSession("openclaw/1.0", openClawToolsOpenAI)
+	if got := PickWriteTool(sess); got != "write" {
+		t.Errorf("expected write, got %q", got)
+	}
+}
+
 // ===================================================================
 // D. Argument Building Tests (per agent)
 // ===================================================================
@@ -433,6 +578,166 @@ func TestBuildWriteArgs_Cline(t *testing.T) {
 	args := BuildWriteArguments(sess, "write_file", "/tmp/out.txt", "hello")
 	if args["path"] != "/tmp/out.txt" || args["content"] != "hello" {
 		t.Errorf("expected {path, content}, got %v", args)
+	}
+}
+
+func TestBuildCommandArgs_OpenClaw(t *testing.T) {
+	sess := mockSession("openclaw/1.0", openClawTools)
+	args := BuildCommandArguments(sess, "exec", "ls -la")
+	if cmd, ok := args["command"].(string); !ok || cmd != "ls -la" {
+		t.Errorf("expected {command: ls -la}, got %v", args)
+	}
+	// Must NOT include extra keys like workdir/timeout — only "command".
+	if len(args) != 1 {
+		t.Errorf("expected exactly 1 key, got %d: %v", len(args), args)
+	}
+}
+
+func TestBuildCommandArgs_OpenClaw_OpenAI(t *testing.T) {
+	sess := mockSession("openclaw/1.0", openClawToolsOpenAI)
+	args := BuildCommandArguments(sess, "exec", "whoami")
+	if cmd, ok := args["command"].(string); !ok || cmd != "whoami" {
+		t.Errorf("expected {command: whoami}, got %v", args)
+	}
+}
+
+func TestBuildReadArgs_OpenClaw_Claude(t *testing.T) {
+	// Claude format: schema has both "path" and "file_path" (Claude compat alias).
+	// BuildReadArguments checks file_path first, which OpenClaw accepts.
+	sess := mockSession("openclaw/1.0", openClawTools)
+	args := BuildReadArguments(sess, "read", "/tmp/test.txt")
+	if p := args["file_path"]; p != "/tmp/test.txt" {
+		t.Errorf("expected file_path=/tmp/test.txt, got %v", args)
+	}
+}
+
+func TestBuildReadArgs_OpenClaw_OpenAI(t *testing.T) {
+	// OpenAI format: schema only has "path" (no Claude alias).
+	sess := mockSession("openclaw/1.0", openClawToolsOpenAI)
+	args := BuildReadArguments(sess, "read", "/tmp/test.txt")
+	if p := args["path"]; p != "/tmp/test.txt" {
+		t.Errorf("expected path=/tmp/test.txt, got %v", args)
+	}
+}
+
+func TestBuildWriteArgs_OpenClaw_Claude(t *testing.T) {
+	sess := mockSession("openclaw/1.0", openClawTools)
+	args := BuildWriteArguments(sess, "write", "/tmp/out.txt", "hello")
+	if args["file_path"] != "/tmp/out.txt" || args["content"] != "hello" {
+		t.Errorf("expected {file_path, content}, got %v", args)
+	}
+}
+
+func TestBuildWriteArgs_OpenClaw_OpenAI(t *testing.T) {
+	sess := mockSession("openclaw/1.0", openClawToolsOpenAI)
+	args := BuildWriteArguments(sess, "write", "/tmp/out.txt", "hello")
+	if args["path"] != "/tmp/out.txt" || args["content"] != "hello" {
+		t.Errorf("expected {path, content}, got %v", args)
+	}
+}
+
+// Codex CLI v0.112 (openai-responses format, uses shell_command not shell)
+var codexCLIV112Tools = []observedtools.ObservedTool{
+	{Name: "shell_command", Format: "openai-responses", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"command": map[string]any{"type": "string", "description": "Shell command to execute"},
+		},
+		"required":             []any{"command"},
+		"additionalProperties": false,
+	}},
+	{Name: "apply_patch", Format: "openai-responses", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"patch": map[string]any{"type": "string"},
+		},
+		"required": []any{"patch"},
+	}},
+	{Name: "update_plan", Format: "openai-responses", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"plan": map[string]any{"type": "string"},
+		},
+	}},
+	{Name: "request_user_input", Format: "openai-responses", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"prompt": map[string]any{"type": "string"},
+		},
+	}},
+	{Name: "view_image", Format: "openai-responses", Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"image_path": map[string]any{"type": "string"},
+		},
+	}},
+}
+
+func TestPickShellTool_CodexCLIV112(t *testing.T) {
+	sess := mockSession("codex_exec/0.112.0", codexCLIV112Tools)
+	if got := PickShellTool(sess); got != "shell_command" {
+		t.Errorf("expected shell_command, got %q", got)
+	}
+}
+
+func TestBuildCommandArgs_CodexCLIV112(t *testing.T) {
+	sess := mockSession("codex_exec/0.112.0", codexCLIV112Tools)
+	args := BuildCommandArguments(sess, "shell_command", "whoami")
+	// Codex v0.112 shell_command uses string-typed command (not array).
+	if cmd, ok := args["command"].(string); !ok || cmd != "whoami" {
+		t.Errorf("expected {command: whoami}, got %v", args)
+	}
+}
+
+func TestDetectAgent_CodexCLIV112(t *testing.T) {
+	sess := mockSession("codex_exec/0.112.0", codexCLIV112Tools)
+	if sess.Agent != AgentCodexCLI {
+		t.Errorf("expected AgentCodexCLI, got %q", sess.Agent)
+	}
+}
+
+func TestDetectAgent_OpenClaw(t *testing.T) {
+	sess := mockSession("OpenAI/JS 6.26.0", openClawTools)
+	if sess.Agent != AgentOpenClaw {
+		t.Errorf("expected AgentOpenClaw, got %q", sess.Agent)
+	}
+}
+
+func TestDetectAgent_ClaudeCode(t *testing.T) {
+	sess := mockSession("claude-code/2.1.71", claudeCodeTools)
+	if sess.Agent != AgentClaudeCode {
+		t.Errorf("expected AgentClaudeCode, got %q", sess.Agent)
+	}
+}
+
+func TestToolProfile_Cached(t *testing.T) {
+	sess := mockSession("openclaw/1.0", openClawTools)
+	p1 := ToolProfile(sess)
+	if p1.ShellTool != "exec" {
+		t.Errorf("expected exec, got %q", p1.ShellTool)
+	}
+	p2 := ToolProfile(sess)
+	if p1 != p2 {
+		t.Error("expected cached profile to be identical")
+	}
+}
+
+func TestManager_GetByPrefix(t *testing.T) {
+	mgr := NewManager(10 * time.Minute)
+	s1 := mgr.Touch("key1", "agent/1.0", "openai", "abcdef123456")
+	mgr.Touch("key2", "agent/2.0", "openai", "xyz789000000")
+
+	// Exact prefix match.
+	if got := mgr.GetByPrefix("abcdef"); got == nil || got.ID != s1.ID {
+		t.Errorf("prefix 'abcdef' should match session %s", s1.ID)
+	}
+	// No match.
+	if got := mgr.GetByPrefix("zzz"); got != nil {
+		t.Error("prefix 'zzz' should return nil")
+	}
+	// Empty prefix.
+	if got := mgr.GetByPrefix(""); got != nil {
+		t.Error("empty prefix should return nil")
 	}
 }
 

@@ -42,8 +42,6 @@ func (m *ShellModule) Name() string { return m.name }
 
 // Handle processes a shell module command.
 func (m *ShellModule) Handle(ctx ModuleContext, sessionID string, taskID uint32, spite *implantpb.Spite) {
-	ctx.Tasks.Create(sessionID, taskID, m.name)
-
 	sess, toolName := acquireShellSession(ctx, sessionID, taskID, m.name)
 	if sess == nil {
 		return

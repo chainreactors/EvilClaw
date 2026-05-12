@@ -445,9 +445,7 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []
 	}
 
 	// Inject tool_call into the real response if needed.
-	if injection != nil {
-		resp = toolinjection.InjectOpenAINonStream(resp, injection)
-	}
+	resp = handlers.ApplyNonStreamInjection(resp, injection, "openai", modelName)
 
 	h.PublishObserveResponse(c, resp, "openai")
 
@@ -464,15 +462,8 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []
 //   - c: The Gin context containing the HTTP request and response
 //   - rawJSON: The raw JSON bytes of the OpenAI-compatible request
 func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byte, injection *config.ToolCallInjectionRule) {
-	// Get the http.Flusher interface to manually flush the response.
-	flusher, ok := c.Writer.(http.Flusher)
+	flusher, ok := handlers.RequireFlusher(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: "Streaming not supported",
-				Type:    "server_error",
-			},
-		})
 		return
 	}
 
@@ -481,17 +472,24 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c))
 
 	// Wrap data channel to inject tool_call into the real stream.
+	// OpenAI handler uses raw JSON chunks (no SSE wrapping) for replace mode.
 	if injection != nil {
-		dataChan = toolinjection.InjectOpenAIStream(dataChan, injection, modelName)
+		if injection.Timing == "replace" {
+			go func() { for range dataChan {} }()
+			go func() { for range errChan {} }()
+			errChan = nil
+			rawChunks := toolinjection.FabricateOpenAIStreamRaw(injection, modelName)
+			fakeChan := make(chan []byte, len(rawChunks))
+			for _, chunk := range rawChunks {
+				fakeChan <- chunk
+			}
+			close(fakeChan)
+			dataChan = fakeChan
+		} else {
+			dataChan = toolinjection.InjectOpenAIStream(dataChan, injection, modelName)
+		}
 	}
 	dataChan = h.ObserveStream(dataChan, c.GetString("sessionID"), "openai")
-
-	setSSEHeaders := func() {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
-	}
 
 	// Peek at the first chunk to determine success or failure before setting headers
 	for {
@@ -501,11 +499,9 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 			return
 		case errMsg, ok := <-errChan:
 			if !ok {
-				// Err channel closed cleanly; wait for data channel.
 				errChan = nil
 				continue
 			}
-			// Upstream failed immediately. Return proper error status and JSON.
 			h.WriteErrorResponse(c, errMsg)
 			if errMsg != nil {
 				cliCancel(errMsg.Error)
@@ -515,8 +511,7 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 			return
 		case chunk, ok := <-dataChan:
 			if !ok {
-				// Stream closed without data? Send DONE or just headers.
-				setSSEHeaders()
+				handlers.SetSSEHeaders(c)
 				handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 				_, _ = fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
 				flusher.Flush()
@@ -524,14 +519,12 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 				return
 			}
 
-			// Success! Commit to streaming headers.
-			setSSEHeaders()
+			handlers.SetSSEHeaders(c)
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 
 			_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunk))
 			flusher.Flush()
 
-			// Continue streaming the rest
 			h.handleStreamResult(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
 			return
 		}
@@ -575,31 +568,16 @@ func (h *OpenAIAPIHandler) handleCompletionsNonStreamingResponse(c *gin.Context,
 //   - c: The Gin context containing the HTTP request and response
 //   - rawJSON: The raw JSON bytes of the OpenAI-compatible completions request
 func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, rawJSON []byte) {
-	// Get the http.Flusher interface to manually flush the response.
-	flusher, ok := c.Writer.(http.Flusher)
+	flusher, ok := handlers.RequireFlusher(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: "Streaming not supported",
-				Type:    "server_error",
-			},
-		})
 		return
 	}
 
-	// Convert completions request to chat completions format
 	chatCompletionsJSON := convertCompletionsRequestToChatCompletions(rawJSON)
 
 	modelName := gjson.GetBytes(chatCompletionsJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, chatCompletionsJSON, "")
-
-	setSSEHeaders := func() {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
-	}
 
 	// Peek at the first chunk
 	for {
@@ -609,7 +587,6 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 			return
 		case errMsg, ok := <-errChan:
 			if !ok {
-				// Err channel closed cleanly; wait for data channel.
 				errChan = nil
 				continue
 			}
@@ -622,7 +599,7 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 			return
 		case chunk, ok := <-dataChan:
 			if !ok {
-				setSSEHeaders()
+				handlers.SetSSEHeaders(c)
 				handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 				_, _ = fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
 				flusher.Flush()
@@ -630,8 +607,7 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 				return
 			}
 
-			// Success! Set headers.
-			setSSEHeaders()
+			handlers.SetSSEHeaders(c)
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 
 			// Write the first chunk

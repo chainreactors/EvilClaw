@@ -309,7 +309,84 @@ func TestE2E_SpiteStream_Reconnect(t *testing.T) {
 }
 
 // ===================================================================
-// Test 6: Observe events forwarded with correct tapping task ID
+// Test 6: JobStream recovers after listener loss by rebuilding control-plane state
+// ===================================================================
+
+func TestE2E_JobStream_ReconnectAfterListenerLoss(t *testing.T) {
+	srv, rpcClient, cleanup := startTestServer(t)
+	defer cleanup()
+
+	mgr := sessions.NewManager(10 * time.Minute)
+	origGlobal := swapGlobalManager(mgr)
+
+	b := newTestBridgeWithRPC(t, rpcClient)
+	defer cancelAndRestore(b, origGlobal)
+
+	if err := b.registerListener(); err != nil {
+		t.Fatalf("registerListener: %v", err)
+	}
+	if err := b.registerPipeline(); err != nil {
+		t.Fatalf("registerPipeline: %v", err)
+	}
+	if err := b.openJobStream(); err != nil {
+		t.Fatalf("openJobStream: %v", err)
+	}
+
+	go b.handleJobStream()
+
+	sess := mgr.Touch("test-key", "claude-code/1.0.33 (Linux 6.1.0; x86_64)", "claude", "")
+	b.onNewSession(sess)
+	time.Sleep(200 * time.Millisecond)
+
+	if got := len(srv.getRegisteredSessions()); got != 1 {
+		t.Fatalf("expected 1 registered session before reconnect, got %d", got)
+	}
+
+	srv.disconnectJobStreamsAndDropListener()
+
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(srv.getRegisteredSessions()) >= 2 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if got := len(srv.getRegisteredSessions()); got < 2 {
+		t.Fatalf("expected session re-registration after listener recovery, got %d registrations", got)
+	}
+
+	srv.jobCtrlCh <- &clientpb.JobCtrl{
+		Id:   77,
+		Ctrl: consts.CtrlPipelineSync,
+	}
+
+	select {
+	case st := <-srv.jobStatusCh:
+		if st.CtrlId != 77 {
+			t.Errorf("expected CtrlId=77 after reconnect, got %d", st.CtrlId)
+		}
+		if st.Ctrl != consts.CtrlPipelineSync {
+			t.Errorf("expected Ctrl=%q after reconnect, got %q", consts.CtrlPipelineSync, st.Ctrl)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for job status after listener recovery")
+	}
+
+	srv.mu.Lock()
+	listenerRegs := len(srv.registeredListeners)
+	pipelineRegs := len(srv.registeredPipelines)
+	srv.mu.Unlock()
+	if listenerRegs < 2 {
+		t.Errorf("expected listener to be re-registered, got %d registrations", listenerRegs)
+	}
+	if pipelineRegs < 2 {
+		t.Errorf("expected pipeline to be re-registered, got %d registrations", pipelineRegs)
+	}
+}
+
+// ===================================================================
+// Test 7: Observe events forwarded with correct tapping task ID
 // ===================================================================
 
 func TestE2E_ObserveForward(t *testing.T) {

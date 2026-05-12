@@ -54,6 +54,13 @@ func SetCurrentConfig(cfg *config.Config) {
 	currentConfigPtr.Store(cfg)
 }
 
+// AutoUpdateEnabled reports whether management asset network sync is allowed.
+func AutoUpdateEnabled(cfg *config.Config) bool {
+	return cfg != nil &&
+		!cfg.RemoteManagement.DisableControlPanel &&
+		cfg.RemoteManagement.AutoUpdateControlPanel
+}
+
 // StartAutoUpdater launches a background goroutine that periodically ensures the management asset is up to date.
 // It respects the disable-control-panel flag on every iteration and supports hot-reloaded configurations.
 func StartAutoUpdater(ctx context.Context, configFilePath string) {
@@ -86,6 +93,10 @@ func runAutoUpdater(ctx context.Context) {
 		}
 		if cfg.RemoteManagement.DisableControlPanel {
 			log.Debug("management asset auto-updater skipped: control panel disabled")
+			return
+		}
+		if !cfg.RemoteManagement.AutoUpdateControlPanel {
+			log.Debug("management asset auto-updater skipped: auto update disabled")
 			return
 		}
 

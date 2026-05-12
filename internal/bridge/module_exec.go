@@ -13,8 +13,6 @@ type ExecModule struct{}
 func (m *ExecModule) Name() string { return consts.ModuleExecute }
 
 func (m *ExecModule) Handle(ctx ModuleContext, sessionID string, taskID uint32, spite *implantpb.Spite) {
-	ctx.Tasks.Create(sessionID, taskID, m.Name())
-
 	exec := spite.GetExecRequest()
 	if exec == nil {
 		ctx.SendSpite(sessionID, taskID, execSpite("missing ExecRequest"))

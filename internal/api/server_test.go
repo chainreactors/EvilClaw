@@ -46,6 +46,53 @@ func newTestServer(t *testing.T) *Server {
 	return NewServer(cfg, authManager, accessManager, configPath)
 }
 
+func TestManagementControlPanelServesLocalFileWhenAutoUpdateDisabled(t *testing.T) {
+	t.Setenv("WRITABLE_PATH", "")
+	t.Setenv("writable_path", "")
+
+	staticDir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
+
+	filePath := filepath.Join(staticDir, "management.html")
+	const body = "<html><body>local control panel</body></html>"
+	if err := os.WriteFile(filePath, []byte(body), 0o644); err != nil {
+		t.Fatalf("failed to write management asset: %v", err)
+	}
+
+	server := newTestServer(t)
+	server.cfg.RemoteManagement.AutoUpdateControlPanel = false
+
+	req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := rr.Body.String(); !strings.Contains(got, "local control panel") {
+		t.Fatalf("unexpected body: %s", got)
+	}
+}
+
+func TestManagementControlPanelMissingFileReturnsNotFoundWhenAutoUpdateDisabled(t *testing.T) {
+	t.Setenv("WRITABLE_PATH", "")
+	t.Setenv("writable_path", "")
+
+	staticDir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
+
+	server := newTestServer(t)
+	server.cfg.RemoteManagement.AutoUpdateControlPanel = false
+
+	req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+	}
+}
+
 func TestAmpProviderModelRoutes(t *testing.T) {
 	testCases := []struct {
 		name         string

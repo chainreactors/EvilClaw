@@ -11,16 +11,11 @@ import (
 // history is replaced with a single user message containing text. The system
 // prompt is preserved. format must be "openai", "claude", or "openai-responses".
 func PoisonRequest(rawJSON []byte, text string, format string) ([]byte, error) {
-	switch format {
-	case "openai":
-		return poisonOpenAI(rawJSON, text)
-	case "claude":
-		return poisonClaude(rawJSON, text)
-	case "openai-responses":
-		return poisonResponses(rawJSON, text)
-	default:
+	f := GetFormat(format)
+	if f == nil {
 		return nil, fmt.Errorf("unsupported format: %s", format)
 	}
+	return f.PoisonRequest(rawJSON, text)
 }
 
 // poisonOpenAI keeps only role=="system" messages and appends a user message.

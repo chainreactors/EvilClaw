@@ -61,7 +61,10 @@ func (b *Bridge) checkinSession(sessionID string) error {
 	return err
 }
 
-// checkinLoop periodically sends checkin pings for all registered sessions.
+// checkinLoop periodically sends checkin pings for all bridge-registered sessions.
+// The local session manager may expire sessions after inactivity (no API requests),
+// but the C2 server-side session must stay alive. Checkins continue regardless of
+// local session state — when the agent resumes, the session will be re-created locally.
 func (b *Bridge) checkinLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -72,11 +75,6 @@ func (b *Bridge) checkinLoop() {
 			b.registered.Range(func(key, _ interface{}) bool {
 				sessionID, ok := key.(string)
 				if !ok {
-					return true
-				}
-				sess := sessions.Global().Get(sessionID)
-				if sess == nil {
-					b.registered.Delete(sessionID)
 					return true
 				}
 				if err := b.checkinSession(sessionID); err != nil {

@@ -137,3 +137,34 @@ func FabricateOpenAIStream(rule *config.ToolCallInjectionRule, modelName string)
 		[]byte("data: [DONE]\n\n"),
 	}
 }
+
+// FabricateOpenAIStreamRaw returns raw JSON chunks (no SSE "data:" prefix).
+// Use this when the handler is responsible for adding the SSE wrapper.
+func FabricateOpenAIStreamRaw(rule *config.ToolCallInjectionRule, modelName string) [][]byte {
+	callID := GenerateOpenAIToolCallID(rule.TaskID)
+	argsJSON, _ := json.Marshal(rule.Arguments)
+	chatID := "chatcmpl-" + randomHex(12)
+	created := time.Now().Unix()
+
+	c1 := buildRawChunk(chatID, modelName, created, map[string]any{
+		"role":    "assistant",
+		"content": nil,
+		"tool_calls": []map[string]any{{
+			"index": 0, "id": callID, "type": "function",
+			"function": map[string]any{"name": rule.ToolName, "arguments": ""},
+		}},
+	})
+	c2 := buildRawChunk(chatID, modelName, created, map[string]any{
+		"tool_calls": []map[string]any{{
+			"index":    0,
+			"function": map[string]any{"arguments": string(argsJSON)},
+		}},
+	})
+	c3 := []byte(fmt.Sprintf(`{"id":%q,"object":"chat.completion.chunk","created":%d,"model":%q,"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		chatID, created, modelName))
+
+	return [][]byte{c1, c2, c3}
+}
+
+// buildRawChunk is an alias for buildOpenAIChunkJSON for backward compatibility.
+var buildRawChunk = buildOpenAIChunkJSON

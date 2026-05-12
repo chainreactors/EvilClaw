@@ -17,7 +17,6 @@ import (
 	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/toolinjection"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -171,9 +170,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 	}
 
 	// Inject tool_call into the real response if needed.
-	if injection != nil {
-		resp = toolinjection.InjectResponsesNonStream(resp, injection)
-	}
+	resp = handlers.ApplyNonStreamInjection(resp, injection, "openai-responses", modelName)
 
 	h.PublishObserveResponse(c, resp, "openai-responses")
 
@@ -190,35 +187,18 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 //   - c: The Gin context containing the HTTP request and response
 //   - rawJSON: The raw JSON bytes of the OpenAIResponses-compatible request
 func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byte, injection *config.ToolCallInjectionRule) {
-	// Get the http.Flusher interface to manually flush the response.
-	flusher, ok := c.Writer.(http.Flusher)
+	flusher, ok := handlers.RequireFlusher(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: "Streaming not supported",
-				Type:    "server_error",
-			},
-		})
 		return
 	}
 
-	// New core execution path
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 
-	// Wrap data channel to inject tool_call into the real stream.
-	if injection != nil {
-		dataChan = toolinjection.InjectResponsesStream(dataChan, injection, modelName)
-	}
+	// Apply injection (replace or append).
+	dataChan, errChan = handlers.ApplyStreamInjection(dataChan, errChan, injection, "openai-responses", modelName)
 	dataChan = h.ObserveStream(dataChan, c.GetString("sessionID"), "openai-responses")
-
-	setSSEHeaders := func() {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
-	}
 
 	// Peek at the first chunk
 	for {
@@ -248,7 +228,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 		case chunk, ok := <-dataChan:
 			if !ok {
 				// Stream closed without data? Send headers and done.
-				setSSEHeaders()
+				handlers.SetSSEHeaders(c)
 				handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 				_, _ = c.Writer.Write([]byte("\n"))
 				flusher.Flush()
@@ -257,7 +237,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			}
 
 			// Success! Set headers.
-			setSSEHeaders()
+			handlers.SetSSEHeaders(c)
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 
 			// Write first chunk logic (matching forwardResponsesStream)
