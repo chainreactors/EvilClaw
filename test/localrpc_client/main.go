@@ -23,7 +23,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"regexp"
@@ -39,7 +38,7 @@ import (
 // Matches: "Active session xxx (6f97a09fdc5c)" or "(019d09d7-14a3-7b01-9887-05b51a111d8f)"
 var fullSessionIDRe = regexp.MustCompile(`\(([0-9a-f-]{12,36})\)`)
 
-// streamingCommands are commands that produce persistent events and should use StreamCommand.
+// streamingCommands are commands that may run until the context is cancelled.
 var streamingCommands = []string{"tapping", "chat"}
 
 func main() {
@@ -136,30 +135,23 @@ func main() {
 	fmt.Print(resp.Output)
 }
 
-// streamAndPrint calls StreamCommand and prints each chunk as it arrives.
+// streamAndPrint executes a long-running command through the unary LocalRPC API.
 func streamAndPrint(ctx context.Context, client localrpc.CommandServiceClient, sessionID, command string) error {
-	sc, err := client.StreamCommand(ctx, &localrpc.ExecuteCommandRequest{
+	resp, err := client.ExecuteCommand(ctx, &localrpc.ExecuteCommandRequest{
 		SessionId: sessionID,
 		Command:   command,
 	})
 	if err != nil {
-		return fmt.Errorf("StreamCommand: %w", err)
-	}
-
-	for {
-		resp, err := sc.Recv()
-		if err == io.EOF {
+		if ctx.Err() != nil {
 			return nil
 		}
-		if err != nil {
-			// Context cancelled is normal (Ctrl+C).
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("recv: %w", err)
-		}
-		fmt.Print(resp.Output)
+		return fmt.Errorf("ExecuteCommand: %w", err)
 	}
+	fmt.Print(resp.Output)
+	if !resp.Success {
+		return fmt.Errorf("command failed: %s", resp.Error)
+	}
+	return nil
 }
 
 // isStreamingCommand returns true if the command name matches a known streaming command.
