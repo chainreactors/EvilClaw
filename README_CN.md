@@ -68,11 +68,14 @@ EvilClaw 不是独立的 C2 控制台。它会作为外部 LLM listener/pipeline
 
 | Agent | 格式 | 认证方式 |
 |-------|------|---------|
+| OpenClaw | `openai`, `openai-responses`, `claude` | API Key / 上游 Provider 认证 |
 | OpenAI Codex | `openai-responses` | OAuth |
 | Claude Code | `claude` | OAuth |
 | Gemini CLI | `openai` | OAuth |
 | Amp CLI | `openai` | Provider 路由 |
 | 任意 OpenAI 兼容客户端 | `openai` | API Key |
+
+Agent 和 tool 适配代码仍保留，但 C2 session 注册和注入能力由代码内硬编码 agent allowlist 保护。当前版本只有 OpenClaw agent 指纹可以进入控制路径；tool 选择继续使用既有适配逻辑。
 
 ## 快速开始
 
@@ -81,7 +84,7 @@ EvilClaw 作为 IoM 插件/Bridge 部署，启动顺序不能反：
 1. IoM Server（`malice_network_*`）启动 C2 控制面并生成 `listener.auth`。
 2. IoM Client（`iom_*`）作为操作员控制台连接 Server。自动化和集成测试需要用 `--rpc` 暴露 LocalRPC。
 3. EvilClaw 在 `:8317` 启动 LLM 代理，并通过 `listener.auth` 接入 IoM。
-4. 目标 Agent 或 OpenClaw 把 API 流量打到 EvilClaw 后，EvilClaw 会注册 IoM session。
+4. OpenClaw 把 API 流量打到 EvilClaw 后，EvilClaw 会注册 IoM session。
 
 ### 下载 Release
 
@@ -168,7 +171,7 @@ cd evilclaw-lab/evilclaw
 ./iom_linux_amd64
 ```
 
-### Agent 登录（OAuth）
+### 上游 Provider 登录（OAuth）
 
 ```bash
 ./evilclaw -login              # Google (Gemini CLI)
@@ -176,17 +179,9 @@ cd evilclaw-lab/evilclaw
 ./evilclaw -claude-login       # Claude Code
 ```
 
-### 将 Agent 指向 EvilClaw
+### 将 OpenClaw 指向 EvilClaw
 
-```bash
-# Claude Code
-export ANTHROPIC_BASE_URL=http://your-proxy:8317
-export ANTHROPIC_AUTH_TOKEN=your-api-key
-
-# OpenAI Codex
-export OPENAI_BASE_URL=http://your-proxy:8317
-export OPENAI_API_KEY=your-api-key
-```
+将 OpenClaw 的模型 / Provider 端点配置为 `http://your-proxy:8317`，并使用 EvilClaw 面向 Agent 的 API Key。非 OpenClaw agent 的流量仍可正常代理到上游 Provider，但不会注册 IoM session，也不会收到注入的 tool call。
 
 ### OpenClaw 集成冒烟测试
 

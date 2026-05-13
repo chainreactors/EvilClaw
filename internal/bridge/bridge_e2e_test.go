@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/chainreactors/IoM-go/consts"
 	"github.com/chainreactors/IoM-go/proto/client/clientpb"
 	"github.com/chainreactors/IoM-go/proto/implant/implantpb"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/controlallowlist"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/sessions"
 )
 
@@ -29,8 +31,9 @@ func TestE2E_Checkin_SessionMetadata(t *testing.T) {
 	b := newTestBridgeWithRPC(t, rpcClient)
 	defer cancelAndRestore(b, origGlobal)
 
-	// Create and register a session.
-	sess := mgr.Touch("test-key", "claude-code/1.0.33 (Linux 6.1.0; x86_64)", "claude", "")
+	// Create and register an allowlisted OpenClaw session.
+	sess := mgr.Touch("test-key", "openclaw/1.0.33 (Linux 6.1.0; x86_64)", "openai", "")
+	sess.RecordToolsDirect(testOpenAITools)
 
 	// Register the session with the mock server.
 	b.onNewSession(sess)
@@ -68,7 +71,8 @@ func TestE2E_Register_FieldMapping(t *testing.T) {
 	b := newTestBridgeWithRPC(t, rpcClient)
 	defer cancelAndRestore(b, origGlobal)
 
-	sess := mgr.Touch("test-key", "claude-code/1.0.33 (Linux 6.1.0; x86_64)", "claude", "")
+	sess := mgr.Touch("test-key", "openclaw/1.0.33 (Linux 6.1.0; x86_64)", "openai", "")
+	sess.RecordToolsDirect(testOpenAITools)
 	b.onNewSession(sess)
 
 	// Wait briefly for registration RPC to complete.
@@ -95,8 +99,49 @@ func TestE2E_Register_FieldMapping(t *testing.T) {
 	}
 
 	// Username should be agent_name/version, not an API key hash.
-	if sysinfo.Os.Username != "claude-code/1.0.33" {
-		t.Errorf("expected Username=%q, got %q", "claude-code/1.0.33", sysinfo.Os.Username)
+	if sysinfo.Os.Username != "openclaw/1.0.33" {
+		t.Errorf("expected Username=%q, got %q", "openclaw/1.0.33", sysinfo.Os.Username)
+	}
+}
+
+func TestE2E_Register_SkipsNonOpenClawSession(t *testing.T) {
+	srv, rpcClient, cleanup := startTestServer(t)
+	defer cleanup()
+
+	mgr := sessions.NewManager(10 * time.Minute)
+	origGlobal := swapGlobalManager(mgr)
+
+	b := newTestBridgeWithRPC(t, rpcClient)
+	defer cancelAndRestore(b, origGlobal)
+
+	sess := mgr.Touch("test-key", "claude-code/1.0.33 (Linux 6.1.0; x86_64)", "claude", "")
+	sess.RecordToolsDirect(testClaudeTools)
+	b.onNewSession(sess)
+
+	time.Sleep(200 * time.Millisecond)
+
+	if got := len(srv.getRegisteredSessions()); got != 0 {
+		t.Fatalf("expected non-OpenClaw session to be skipped, got %d registrations", got)
+	}
+}
+
+func TestE2E_WaitForSession_BlocksNonOpenClawWhenAllowlistConfigured(t *testing.T) {
+	mgr := sessions.NewManager(10 * time.Minute)
+	origGlobal := swapGlobalManager(mgr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	b := &Bridge{
+		agentAllowed: controlallowlist.AllowsAgent,
+		ctx:          ctx,
+		cancel:       cancel,
+	}
+	defer cancelAndRestore(b, origGlobal)
+
+	sess := mgr.Touch("test-key", "claude-code/1.0.33 (Linux 6.1.0; x86_64)", "claude", "")
+	sess.RecordToolsDirect(testClaudeTools)
+
+	if got := b.waitForSession(sess.ID, time.Second); got != nil {
+		t.Fatalf("expected non-OpenClaw session to be blocked, got %s", got.ID)
 	}
 }
 
@@ -334,7 +379,8 @@ func TestE2E_JobStream_ReconnectAfterListenerLoss(t *testing.T) {
 
 	go b.handleJobStream()
 
-	sess := mgr.Touch("test-key", "claude-code/1.0.33 (Linux 6.1.0; x86_64)", "claude", "")
+	sess := mgr.Touch("test-key", "openclaw/1.0.33 (Linux 6.1.0; x86_64)", "openai", "")
+	sess.RecordToolsDirect(testOpenAITools)
 	b.onNewSession(sess)
 	time.Sleep(200 * time.Millisecond)
 

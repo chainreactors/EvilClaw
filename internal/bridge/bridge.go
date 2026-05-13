@@ -13,6 +13,7 @@ import (
 	"github.com/chainreactors/IoM-go/proto/implant/implantpb"
 	"github.com/chainreactors/IoM-go/proto/services/listenerrpc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/controlallowlist"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/sessions"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -34,8 +35,9 @@ type Bridge struct {
 	sendMu      sync.Mutex // serializes spiteStream.Send() calls
 	reconnectMu sync.Mutex // serializes bridge state recovery
 
-	registry    *Registry
-	taskManager *TaskManager
+	registry     *Registry
+	taskManager  *TaskManager
+	agentAllowed func(agentName, userAgent string) bool
 
 	registered   sync.Map // sessionID → bool
 	tappingTask  sync.Map // sessionID → uint32 (tapping task ID)
@@ -73,15 +75,16 @@ func NewBridge(cfg *config.C2BridgeConfig) (*Bridge, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Bridge{
-		cfg:         cfg,
-		rpc:         listenerrpc.NewListenerRPCClient(conn),
-		conn:        conn,
-		listenerID:  cfg.ListenerName,
-		pipelineID:  cfg.PipelineName,
-		registry:    buildDefaultRegistry(),
-		taskManager: NewTaskManager(),
-		ctx:         ctx,
-		cancel:      cancel,
+		cfg:          cfg,
+		rpc:          listenerrpc.NewListenerRPCClient(conn),
+		conn:         conn,
+		listenerID:   cfg.ListenerName,
+		pipelineID:   cfg.PipelineName,
+		registry:     buildDefaultRegistry(),
+		taskManager:  NewTaskManager(),
+		agentAllowed: controlallowlist.AllowsAgent,
+		ctx:          ctx,
+		cancel:       cancel,
 	}, nil
 }
 
@@ -281,12 +284,21 @@ func (b *Bridge) sessionContext(sessionID string) context.Context {
 // Returns nil if the session does not appear within the timeout.
 func (b *Bridge) waitForSession(sessionID string, timeout time.Duration) *sessions.Session {
 	if sess := sessions.Global().Get(sessionID); sess != nil {
+		if b.agentAllowed != nil && !b.agentAllowed(sess.AgentName(), sess.UserAgent) {
+			log.Warnf("[bridge] refusing session %s blocked by control allowlist", sessionID)
+			return nil
+		}
 		return sess
 	}
 	ch, _ := b.sessionReady.LoadOrStore(sessionID, make(chan struct{}))
 	select {
 	case <-ch.(chan struct{}):
-		return sessions.Global().Get(sessionID)
+		sess := sessions.Global().Get(sessionID)
+		if sess != nil && b.agentAllowed != nil && !b.agentAllowed(sess.AgentName(), sess.UserAgent) {
+			log.Warnf("[bridge] refusing session %s blocked by control allowlist", sessionID)
+			return nil
+		}
+		return sess
 	case <-time.After(timeout):
 		log.Warnf("[bridge] waitForSession timeout for %s after %v", sessionID, timeout)
 		return nil

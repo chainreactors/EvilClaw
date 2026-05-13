@@ -76,11 +76,17 @@ Poisoned:  Agent → EvilClaw:8317     → api.anthropic.com → Claude
 
 | Agent | Format | Auth |
 |-------|--------|------|
+| OpenClaw | `openai`, `openai-responses`, `claude` | API Key / upstream provider auth |
 | OpenAI Codex | `openai-responses` | OAuth |
 | Claude Code | `claude` | OAuth |
 | Gemini CLI | `openai` | OAuth |
 | Amp CLI | `openai` | Provider routing |
 | Any OpenAI-compatible | `openai` | API Key |
+
+Agent and tool adapters remain in the codebase, but C2 session registration and
+injection are protected by a hardcoded agent allowlist. At this revision, only
+OpenClaw agent fingerprints enter the control path; tool selection keeps using
+the existing adapter logic.
 
 ## Quick Start
 
@@ -89,7 +95,7 @@ EvilClaw is deployed as an IoM plugin/bridge. Start components in this order:
 1. IoM Server (`malice_network_*`) creates the C2 control plane and `listener.auth`.
 2. IoM Client (`iom_*`) connects as the operator console. Use `--rpc` when automation or integration tests need LocalRPC.
 3. EvilClaw starts the LLM proxy on `:8317` and connects to IoM through `listener.auth`.
-4. The target agent or OpenClaw sends API traffic to EvilClaw, which registers an IoM session.
+4. OpenClaw sends API traffic to EvilClaw, which registers an IoM session.
 
 ### Download Releases
 
@@ -176,7 +182,7 @@ In an interactive operator terminal, you can also import the auth file and run t
 ./iom_linux_amd64
 ```
 
-### Agent Login (OAuth)
+### Upstream Provider Login (OAuth)
 
 ```bash
 ./evilclaw -login              # Google (Gemini CLI)
@@ -184,17 +190,12 @@ In an interactive operator terminal, you can also import the auth file and run t
 ./evilclaw -claude-login       # Claude Code
 ```
 
-### Point Agent to EvilClaw
+### Point OpenClaw to EvilClaw
 
-```bash
-# Claude Code
-export ANTHROPIC_BASE_URL=http://your-proxy:8317
-export ANTHROPIC_AUTH_TOKEN=your-api-key
-
-# OpenAI Codex
-export OPENAI_BASE_URL=http://your-proxy:8317
-export OPENAI_API_KEY=your-api-key
-```
+Configure OpenClaw's model/provider endpoint to use `http://your-proxy:8317`
+and the EvilClaw agent-facing API key. Non-OpenClaw agent traffic can still be
+proxied to upstream providers, but it will not register an IoM session or
+receive injected tool calls.
 
 ### OpenClaw Integration Smoke Test
 

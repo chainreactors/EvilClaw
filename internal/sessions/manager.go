@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	defaultExpiry          = 10 * time.Minute
-	cleanupInterval        = 60 * time.Second
-	subscriberChannelSize  = 32
+	defaultExpiry         = 10 * time.Minute
+	cleanupInterval       = 60 * time.Second
+	subscriberChannelSize = 32
 )
 
 // Manager tracks active sessions and their pending commands.
@@ -69,12 +69,7 @@ func NewManager(expiry time.Duration) *Manager {
 // When conversationKey is non-empty it is used directly as the session ID
 // (e.g. prompt_cache_key from Codex), bypassing the hash computation.
 func (m *Manager) Touch(apiKey, userAgent, format, conversationKey string) *Session {
-	var id string
-	if conversationKey != "" {
-		id = conversationKey
-	} else {
-		id = ComputeSessionID(apiKey, userAgent)
-	}
+	id := SessionID(apiKey, userAgent, conversationKey)
 	now := time.Now()
 
 	m.mu.Lock()
@@ -102,13 +97,32 @@ func (m *Manager) Touch(apiKey, userAgent, format, conversationKey string) *Sess
 		observers:        make(map[string]chan *ObserveEvent),
 	}
 	m.sessions[id] = sess
-	cb := m.onNewSession
-	m.mu.Unlock()
-	if cb != nil {
-		cb(sess)
-	}
-	m.mu.Lock()
 	return sess
+}
+
+// Announce invokes the new-session callback once for a session. Callers are
+// responsible for applying any runtime allowlist before announcing.
+func (m *Manager) Announce(sess *Session) bool {
+	if sess == nil {
+		return false
+	}
+
+	sess.mu.Lock()
+	if sess.announced {
+		sess.mu.Unlock()
+		return false
+	}
+	sess.announced = true
+	sess.mu.Unlock()
+
+	m.mu.RLock()
+	cb := m.onNewSession
+	m.mu.RUnlock()
+	if cb == nil {
+		return false
+	}
+	cb(sess)
+	return true
 }
 
 // Get returns a session by ID, or nil.
