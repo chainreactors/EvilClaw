@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/andybalholm/brotli v1.0.6
 	github.com/atotto/clipboard v0.1.4
-	github.com/chainreactors/IoM-go v0.0.0-20260313054312-96ac593ed42c
+	github.com/chainreactors/IoM-go v0.0.0-20260408121019-e629da19961b
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
